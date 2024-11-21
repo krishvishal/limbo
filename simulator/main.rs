@@ -14,7 +14,7 @@ struct SimulatorEnv {
     tables: Vec<Table>,
     connections: Vec<SimConnection>,
     io: Arc<SimulatorIO>,
-    db: Rc<Database>,
+    db: Arc<Database>,
     rng: ChaCha8Rng,
 }
 
