@@ -840,20 +840,6 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_same_id_different_frame() {
-        let mut cache = DumbLruPageCache::default();
-        let key1_1 = PageCacheKey::new(1);
-        let key1_2 = PageCacheKey::new(1);
-        let page1_1 = page_with_content(1);
-        let page1_2 = page_with_content(1);
-
-        assert!(cache.insert(key1_1.clone(), page1_1.clone()).is_ok());
-        assert!(cache.insert(key1_2.clone(), page1_2.clone()).is_ok());
-        assert_eq!(cache.len(), 2);
-        cache.verify_list_integrity();
-    }
-
-    #[test]
     #[should_panic(expected = "Attempted to insert different page with same key")]
     fn test_insert_existing_key_fail() {
         let mut cache = DumbLruPageCache::default();
