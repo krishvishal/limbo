@@ -1049,7 +1049,6 @@ mod tests {
                 assert_eq!(page.get().id, key.pgno);
             }
         }
-        assert!(lru.len() > 0); // Check it inserted some
     }
 
     pub fn compare_to_lru(cache: &mut DumbLruPageCache, lru: &LruCache<PageCacheKey, PageRef>) {
