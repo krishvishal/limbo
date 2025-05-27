@@ -15,7 +15,7 @@ use crate::{
     translate::{
         collate::CollationSeq,
         emitter::TransactionMode,
-        plan::{ResultSetColumn, TableReference},
+        plan::{ResultSetColumn, TableReferences},
     },
     Connection, VirtualTable,
 };
@@ -106,7 +106,7 @@ pub struct ProgramBuilder {
     comments: Option<Vec<(InsnReference, &'static str)>>,
     pub parameters: Parameters,
     pub result_columns: Vec<ResultSetColumn>,
-    pub table_references: Vec<TableReference>,
+    pub table_references: TableReferences,
     /// Curr collation sequence. Bool indicates whether it was set by a COLLATE expr
     collation: Option<(CollationSeq, bool)>,
     /// Current parsing nesting level
@@ -170,7 +170,7 @@ impl ProgramBuilder {
             },
             parameters: Parameters::new(),
             result_columns: Vec::new(),
-            table_references: Vec::new(),
+            table_references: TableReferences::new(vec![], vec![]),
             collation: None,
             nested_level: 0,
             // These labels will be filled when `prologue()` is called
@@ -740,7 +740,7 @@ impl ProgramBuilder {
 
     /// Checks whether `table` or any of its indices has been opened in the program
     pub fn is_table_open(&self, table: &Table) -> bool {
-        self.table_references.iter().any(|t| t.table == *table)
+        self.table_references.contains_table(table)
     }
 
     pub fn build(

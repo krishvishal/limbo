@@ -29,11 +29,12 @@ use crate::{
     fast_lock::SpinLock,
     function::{AggFunc, FuncCtx},
     storage::{pager::PagerCacheflushStatus, sqlite3_ondisk::SmallVec},
+    translate::plan::TableReferences,
 };
 
 use crate::{
     storage::{btree::BTreeCursor, pager::Pager, sqlite3_ondisk::DatabaseHeader},
-    translate::plan::{ResultSetColumn, TableReference},
+    translate::plan::ResultSetColumn,
     types::{AggContext, Cursor, CursorResult, ImmutableRecord, SeekKey, SeekOp, Value},
     vdbe::{builder::CursorType, insn::Insn},
 };
@@ -393,7 +394,7 @@ pub struct Program {
     pub n_change: Cell<i64>,
     pub change_cnt_on: bool,
     pub result_columns: Vec<ResultSetColumn>,
-    pub table_references: Vec<TableReference>,
+    pub table_references: TableReferences,
 }
 
 impl Program {

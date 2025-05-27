@@ -422,7 +422,7 @@ impl Connection {
                                 .deref(),
                             *select,
                             &syms,
-                            None,
+                            &[],
                             &mut table_ref_counter,
                             translate::plan::QueryDestination::ResultRows,
                         )?;

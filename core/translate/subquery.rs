@@ -7,7 +7,7 @@ use crate::{
 use super::{
     emitter::{emit_query, Resolver, TranslateCtx},
     main_loop::LoopLabels,
-    plan::{QueryDestination, SelectPlan, TableReference},
+    plan::{QueryDestination, SelectPlan, TableReferences},
 };
 
 /// Emit the subqueries contained in the FROM clause.
@@ -15,9 +15,9 @@ use super::{
 pub fn emit_subqueries(
     program: &mut ProgramBuilder,
     t_ctx: &mut TranslateCtx,
-    tables: &mut [TableReference],
+    tables: &mut TableReferences,
 ) -> Result<()> {
-    for table_reference in tables.iter_mut() {
+    for table_reference in tables.joined_tables_mut() {
         if let Table::FromClauseSubquery(from_clause_subquery) = &mut table_reference.table {
             // Emit the subquery and get the start register of the result columns.
             let result_columns_start =
@@ -65,12 +65,12 @@ pub fn emit_subquery<'a>(
     }
     let end_coroutine_label = program.allocate_label();
     let mut metadata = TranslateCtx {
-        labels_main_loop: (0..plan.table_references.len())
+        labels_main_loop: (0..plan.joined_tables().len())
             .map(|_| LoopLabels::new(program))
             .collect(),
         label_main_loop_end: None,
         meta_group_by: None,
-        meta_left_joins: (0..plan.table_references.len()).map(|_| None).collect(),
+        meta_left_joins: (0..plan.joined_tables().len()).map(|_| None).collect(),
         meta_sort: None,
         reg_agg_start: None,
         reg_nonagg_emit_once_flag: None,

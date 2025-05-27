@@ -35,24 +35,19 @@ pub struct ResultSetColumn {
 }
 
 impl ResultSetColumn {
-    pub fn name<'a>(&'a self, tables: &'a [TableReference]) -> Option<&'a str> {
+    pub fn name<'a>(&'a self, tables: &'a TableReferences) -> Option<&'a str> {
         if let Some(alias) = &self.alias {
             return Some(alias);
         }
         match &self.expr {
             ast::Expr::Column { table, column, .. } => {
-                let table_ref = tables.iter().find(|t| t.internal_id == *table).unwrap();
-                table_ref
-                    .table
-                    .get_column_at(*column)
-                    .unwrap()
-                    .name
-                    .as_deref()
+                let table_ref = tables.find_table_by_internal_id(*table).unwrap();
+                table_ref.get_column_at(*column).unwrap().name.as_deref()
             }
             ast::Expr::RowId { table, .. } => {
                 // If there is a rowid alias column, use its name
-                let table_ref = tables.iter().find(|t| t.internal_id == *table).unwrap();
-                if let Table::BTree(table) = &table_ref.table {
+                let table_ref = tables.find_table_by_internal_id(*table).unwrap();
+                if let Table::BTree(table) = &table_ref {
                     if let Some(rowid_alias_column) = table.get_rowid_alias_column() {
                         if let Some(name) = &rowid_alias_column.1.name {
                             return Some(name);
@@ -345,7 +340,7 @@ pub struct JoinOrderMember {
     /// The internal ID of the[TableReference]
     pub table_id: TableInternalId,
     /// The index of the table in the original join order.
-    /// This is used to index into e.g. [SelectPlan::table_references]
+    /// This is used to index into e.g. [TableReferences::joined_tables()]
     pub original_idx: usize,
     /// Whether this member is the right side of an OUTER JOIN
     pub is_outer: bool,
@@ -429,9 +424,8 @@ impl DistinctCtx {
 
 #[derive(Debug, Clone)]
 pub struct SelectPlan {
-    /// List of table references in loop order, outermost first.
-    pub table_references: Vec<TableReference>,
-    /// The order in which the tables are joined. Tables have usize Ids (their index in table_references)
+    pub table_references: TableReferences,
+    /// The order in which the tables are joined. Tables have usize Ids (their index in joined_tables)
     pub join_order: Vec<JoinOrderMember>,
     /// the columns inside SELECT ... FROM
     pub result_columns: Vec<ResultSetColumn>,
@@ -459,6 +453,10 @@ pub struct SelectPlan {
 }
 
 impl SelectPlan {
+    pub fn joined_tables(&self) -> &[JoinedTable] {
+        self.table_references.joined_tables()
+    }
+
     pub fn agg_args_count(&self) -> usize {
         self.aggregates.iter().map(|agg| agg.args.len()).sum()
     }
@@ -502,7 +500,8 @@ impl SelectPlan {
                 self.query_destination,
                 QueryDestination::CoroutineYield { .. }
             )
-            || self.table_references.len() != 1
+            || self.table_references.joined_tables().len() != 1
+            || self.table_references.outer_query_refs().len() != 0
             || self.result_columns.len() != 1
             || self.group_by.is_some()
             || self.contains_constant_false_condition
@@ -510,7 +509,7 @@ impl SelectPlan {
         {
             return false;
         }
-        let table_ref = self.table_references.first().unwrap();
+        let table_ref = self.table_references.joined_tables().first().unwrap();
         if !matches!(table_ref.table, crate::schema::Table::BTree(..)) {
             return false;
         }
@@ -541,8 +540,7 @@ impl SelectPlan {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeletePlan {
-    /// List of table references. Delete is always a single table.
-    pub table_references: Vec<TableReference>,
+    pub table_references: TableReferences,
     /// the columns inside SELECT ... FROM
     pub result_columns: Vec<ResultSetColumn>,
     /// where clause split into a vec at 'AND' boundaries.
@@ -561,8 +559,7 @@ pub struct DeletePlan {
 
 #[derive(Debug, Clone)]
 pub struct UpdatePlan {
-    // table being updated is always first
-    pub table_references: Vec<TableReference>,
+    pub table_references: TableReferences,
     // (colum index, new value) pairs
     pub set_clauses: Vec<(usize, ast::Expr)>,
     pub where_clause: Vec<WhereTerm>,
@@ -583,7 +580,7 @@ pub enum IterationDirection {
     Backwards,
 }
 
-pub fn select_star(tables: &[TableReference], out_columns: &mut Vec<ResultSetColumn>) {
+pub fn select_star(tables: &[JoinedTable], out_columns: &mut Vec<ResultSetColumn>) {
     for table in tables.iter() {
         let maybe_using_cols = table
             .join_info
@@ -855,6 +852,16 @@ impl TableReferences {
                 internal_id
             );
         }
+    }
+
+    pub fn contains_table(&self, table: &Table) -> bool {
+        self.joined_tables.iter().any(|t| t.table == *table)
+            || self.outer_query_refs.iter().any(|t| t.table == *table)
+    }
+
+    pub fn extend(&mut self, other: TableReferences) {
+        self.joined_tables.extend(other.joined_tables);
+        self.outer_query_refs.extend(other.outer_query_refs);
     }
 }
 
@@ -1233,8 +1240,8 @@ impl Display for SelectPlan {
         writeln!(f, "QUERY PLAN")?;
 
         // Print each table reference with appropriate indentation based on join depth
-        for (i, reference) in self.table_references.iter().enumerate() {
-            let is_last = i == self.table_references.len() - 1;
+        for (i, reference) in self.table_references.joined_tables().iter().enumerate() {
+            let is_last = i == self.table_references.joined_tables().len() - 1;
             let indent = if i == 0 {
                 if is_last { "`--" } else { "|--" }.to_string()
             } else {
@@ -1284,7 +1291,7 @@ impl Display for DeletePlan {
         writeln!(f, "QUERY PLAN")?;
 
         // Delete plan should only have one table reference
-        if let Some(reference) = self.table_references.first() {
+        if let Some(reference) = self.table_references.joined_tables().first() {
             let indent = "`--";
 
             match &reference.op {
@@ -1310,8 +1317,8 @@ impl fmt::Display for UpdatePlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "QUERY PLAN")?;
 
-        for (i, reference) in self.table_references.iter().enumerate() {
-            let is_last = i == self.table_references.len() - 1;
+        for (i, reference) in self.table_references.joined_tables().iter().enumerate() {
+            let is_last = i == self.table_references.joined_tables().len() - 1;
             let indent = if i == 0 {
                 if is_last { "`--" } else { "|--" }.to_string()
             } else {

@@ -12,7 +12,7 @@ use crate::{
 use super::{
     emitter::{Resolver, TranslateCtx},
     expr::translate_expr,
-    plan::{Aggregate, Distinctness, SelectPlan, TableReference},
+    plan::{Aggregate, Distinctness, SelectPlan, TableReferences},
     result_row::emit_select_result,
 };
 
@@ -99,7 +99,7 @@ pub fn handle_distinct(program: &mut ProgramBuilder, agg: &Aggregate, agg_arg_re
 /// and the actual result value of the aggregation is materialized.
 pub fn translate_aggregation_step(
     program: &mut ProgramBuilder,
-    referenced_tables: &[TableReference],
+    referenced_tables: &TableReferences,
     agg: &Aggregate,
     target_register: usize,
     resolver: &Resolver,

@@ -16,7 +16,7 @@ use super::main_loop::{
 };
 use super::order_by::{emit_order_by, init_order_by, SortMetadata};
 use super::plan::{
-    JoinOrderMember, Operation, QueryDestination, SelectPlan, TableReference, UpdatePlan,
+    JoinOrderMember, Operation, QueryDestination, SelectPlan, TableReferences, UpdatePlan,
 };
 use super::schema::ParseSchema;
 use super::select::emit_simple_count;
@@ -238,7 +238,7 @@ fn emit_program_for_compound_select(
         program,
         schema,
         syms,
-        first.table_references.len(),
+        first.table_references.joined_tables().len(),
         first.result_columns.len(),
     ));
     rest.iter().for_each(|(select, _)| {
@@ -246,7 +246,7 @@ fn emit_program_for_compound_select(
             program,
             schema,
             syms,
-            select.table_references.len(),
+            select.table_references.joined_tables().len(),
             select.result_columns.len(),
         );
         t_ctx_list.push(t_ctx);
@@ -475,7 +475,7 @@ fn emit_program_for_select(
         program,
         schema,
         syms,
-        plan.table_references.len(),
+        plan.table_references.joined_tables().len(),
         plan.result_columns.len(),
     );
 
@@ -492,7 +492,7 @@ fn emit_program_for_select(
     emit_query(program, &mut plan, &mut t_ctx)?;
 
     // Finalize program
-    if plan.table_references.is_empty() {
+    if plan.table_references.joined_tables().is_empty() {
         program.epilogue(TransactionMode::None);
     } else {
         program.epilogue(TransactionMode::Read);
@@ -647,7 +647,7 @@ fn emit_program_for_delete(
         program,
         schema,
         syms,
-        plan.table_references.len(),
+        plan.table_references.joined_tables().len(),
         plan.result_columns.len(),
     );
 
@@ -709,10 +709,10 @@ fn emit_program_for_delete(
 fn emit_delete_insns(
     program: &mut ProgramBuilder,
     t_ctx: &mut TranslateCtx,
-    table_references: &[TableReference],
+    table_references: &TableReferences,
     index_references: &[Arc<Index>],
 ) -> Result<()> {
-    let table_reference = table_references.first().unwrap();
+    let table_reference = table_references.joined_tables().first().unwrap();
     let cursor_id = match &table_reference.op {
         Operation::Scan { .. } => {
             program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id))
@@ -811,7 +811,7 @@ fn emit_program_for_update(
         program,
         schema,
         syms,
-        plan.table_references.len(),
+        plan.table_references.joined_tables().len(),
         plan.returning.as_ref().map_or(0, |r| r.len()),
     );
 
@@ -895,7 +895,7 @@ fn emit_update_insns(
     program: &mut ProgramBuilder,
     index_cursors: Vec<(usize, usize)>,
 ) -> crate::Result<()> {
-    let table_ref = &plan.table_references.first().unwrap();
+    let table_ref = plan.table_references.joined_tables().first().unwrap();
     let loop_labels = t_ctx.labels_main_loop.first().unwrap();
     let (cursor_id, index, is_virtual) = match &table_ref.op {
         Operation::Scan { index, .. } => (

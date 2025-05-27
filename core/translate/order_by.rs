@@ -16,7 +16,7 @@ use crate::{
 use super::{
     emitter::{Resolver, TranslateCtx},
     expr::translate_expr,
-    plan::{Distinctness, ResultSetColumn, SelectPlan, TableReference},
+    plan::{Distinctness, ResultSetColumn, SelectPlan, TableReferences},
     result_row::{emit_offset, emit_result_row_and_limit},
 };
 
@@ -34,7 +34,7 @@ pub fn init_order_by(
     program: &mut ProgramBuilder,
     t_ctx: &mut TranslateCtx,
     order_by: &[(ast::Expr, SortOrder)],
-    referenced_tables: &[TableReference],
+    referenced_tables: &TableReferences,
 ) -> Result<()> {
     let sort_cursor = program.alloc_cursor_id(CursorType::Sorter);
     t_ctx.meta_sort = Some(SortMetadata {
@@ -54,12 +54,9 @@ pub fn init_order_by(
         .map(|(expr, _)| match expr {
             ast::Expr::Collate(_, collation_name) => CollationSeq::new(collation_name).map(Some),
             ast::Expr::Column { table, column, .. } => {
-                let table_reference = referenced_tables
-                    .iter()
-                    .find(|t| t.internal_id == *table)
-                    .unwrap();
+                let table = referenced_tables.find_table_by_internal_id(*table).unwrap();
 
-                let Some(table_column) = table_reference.table.get_column_at(*column) else {
+                let Some(table_column) = table.get_column_at(*column) else {
                     crate::bail_parse_error!("column index out of bounds");
                 };
 

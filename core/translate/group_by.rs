@@ -20,7 +20,7 @@ use super::{
     emitter::{Resolver, TranslateCtx},
     expr::{translate_condition_expr, translate_expr, ConditionMetadata},
     order_by::order_by_sorter_insert,
-    plan::{Aggregate, Distinctness, GroupBy, SelectPlan, TableReference},
+    plan::{Aggregate, Distinctness, GroupBy, SelectPlan, TableReferences},
     result_row::emit_select_result,
 };
 
@@ -137,8 +137,7 @@ pub fn init_group_by(
                 ast::Expr::Column { table, column, .. } => {
                     let table_reference = plan
                         .table_references
-                        .iter()
-                        .find(|t| t.internal_id == *table)
+                        .find_joined_table_by_internal_id(*table)
                         .unwrap();
 
                     let Some(table_column) = table_reference.table.get_column_at(*column) else {
@@ -971,7 +970,7 @@ pub fn group_by_emit_row_phase<'a>(
 /// and the actual result value of the aggregation is materialized.
 pub fn translate_aggregation_step_groupby(
     program: &mut ProgramBuilder,
-    referenced_tables: &[TableReference],
+    referenced_tables: &TableReferences,
     agg_arg_source: GroupByAggArgumentSource,
     target_register: usize,
     resolver: &Resolver,
