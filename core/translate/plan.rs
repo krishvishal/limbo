@@ -630,7 +630,7 @@ pub struct JoinInfo {
     pub using: Option<ast::DistinctNames>,
 }
 
-/// A table reference in the query plan.
+/// A joined table in the query plan.
 /// For example,
 /// ```sql
 /// SELECT * FROM users u JOIN products p JOIN (SELECT * FROM users) sub;
@@ -641,7 +641,7 @@ pub struct JoinInfo {
 /// - `t` and `p` are [Table::BTree] while `sub` is [Table::FromClauseSubquery]
 /// - join_info is None for the first table reference, and Some(JoinInfo { outer: false, using: None }) for the second and third table references
 #[derive(Debug, Clone)]
-pub struct TableReference {
+pub struct JoinedTable {
     /// The operation that this table reference performs.
     pub op: Operation,
     /// Table object, which contains metadata about the table, e.g. columns.
@@ -655,6 +655,207 @@ pub struct TableReference {
     /// Bitmask of columns that are referenced in the query.
     /// Used to decide whether a covering index can be used.
     pub col_used_mask: ColumnUsedMask,
+}
+
+#[derive(Debug, Clone)]
+pub struct OuterQueryReference {
+    /// The name of the table as referred to in the query, either the literal name or an alias e.g. "users" or "u"
+    pub identifier: String,
+    /// Internal ID of the table reference, used in e.g. [Expr::Column] to refer to this table.
+    pub internal_id: TableInternalId,
+    /// Table object, which contains metadata about the table, e.g. columns.
+    pub table: Table,
+    /// Bitmask of columns that are referenced in the query.
+    /// Used to track dependencies, so that it can be resolved
+    /// when a WHERE clause subquery should be evaluated;
+    /// i.e., if the subquery depends on tables T and U,
+    /// then both T and U need to be in scope for the subquery to be evaluated.
+    pub col_used_mask: ColumnUsedMask,
+}
+
+impl OuterQueryReference {
+    /// Returns the columns of the table that this outer query reference refers to.
+    pub fn columns(&self) -> &[Column] {
+        self.table.columns()
+    }
+
+    /// Marks a column as used; used means that the column is referenced in the query.
+    pub fn mark_column_used(&mut self, column_index: usize) {
+        self.col_used_mask.set(column_index);
+    }
+
+    /// Whether the OuterQueryReference is used by the current query scope.
+    /// This is used primarily to determine at what loop depth a subquery should be evaluated.
+    pub fn is_used(&self) -> bool {
+        !self.col_used_mask.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+/// A collection of table references in a given SQL statement.
+///
+/// `TableReferences::joined_tables` is the list of tables that are joined together.
+/// Example: SELECT * FROM t JOIN u JOIN v -- the joined tables are t, u and v.
+///
+/// `TableReferences::outer_query_refs` are references to tables outside the current scope.
+/// Example: SELECT * FROM t WHERE EXISTS (SELECT * FROM u WHERE u.foo = t.foo)
+/// -- here, 'u' is an outer query reference for the subquery (SELECT * FROM u WHERE u.foo = t.foo),
+/// since that query does not declare 't' in its FROM clause.
+///
+///
+/// Typically a query will only have joined tables, but the following may have outer query references:
+/// - CTEs that refer to other preceding CTEs
+/// - Correlated subqueries, i.e. subqueries that depend on the outer scope
+pub struct TableReferences {
+    /// Tables that are joined together in this query scope.
+    joined_tables: Vec<JoinedTable>,
+    /// Tables from outer scopes that are referenced in this query scope.
+    outer_query_refs: Vec<OuterQueryReference>,
+}
+
+impl TableReferences {
+    pub fn new(
+        joined_tables: Vec<JoinedTable>,
+        outer_query_refs: Vec<OuterQueryReference>,
+    ) -> Self {
+        Self {
+            joined_tables,
+            outer_query_refs,
+        }
+    }
+
+    /// Add a new [JoinedTable] to the query plan.
+    pub fn add_joined_table(&mut self, joined_table: JoinedTable) {
+        self.joined_tables.push(joined_table);
+    }
+
+    /// Returns an immutable reference to the [JoinedTable]s in the query plan.
+    pub fn joined_tables(&self) -> &[JoinedTable] {
+        &self.joined_tables
+    }
+
+    /// Returns a mutable reference to the [JoinedTable]s in the query plan.
+    pub fn joined_tables_mut(&mut self) -> &mut Vec<JoinedTable> {
+        &mut self.joined_tables
+    }
+
+    /// Returns an immutable reference to the [OuterQueryReference]s in the query plan.
+    pub fn outer_query_refs(&self) -> &[OuterQueryReference] {
+        &self.outer_query_refs
+    }
+
+    /// Returns an immutable reference to the [OuterQueryReference] with the given internal ID.
+    pub fn find_outer_query_ref_by_internal_id(
+        &self,
+        internal_id: TableInternalId,
+    ) -> Option<&OuterQueryReference> {
+        self.outer_query_refs
+            .iter()
+            .find(|t| t.internal_id == internal_id)
+    }
+
+    /// Returns a mutable reference to the [OuterQueryReference] with the given internal ID.
+    pub fn find_outer_query_ref_by_internal_id_mut(
+        &mut self,
+        internal_id: TableInternalId,
+    ) -> Option<&mut OuterQueryReference> {
+        self.outer_query_refs
+            .iter_mut()
+            .find(|t| t.internal_id == internal_id)
+    }
+
+    /// Returns an immutable reference to the [Table] with the given internal ID.
+    pub fn find_table_by_internal_id(&self, internal_id: TableInternalId) -> Option<&Table> {
+        self.joined_tables
+            .iter()
+            .find(|t| t.internal_id == internal_id)
+            .map(|t| &t.table)
+            .or_else(|| {
+                self.outer_query_refs
+                    .iter()
+                    .find(|t| t.internal_id == internal_id)
+                    .map(|t| &t.table)
+            })
+    }
+
+    /// Returns an immutable reference to the [Table] with the given identifier,
+    /// where identifier is either the literal name of the table or an alias.
+    pub fn find_table_by_identifier(&self, identifier: &str) -> Option<&Table> {
+        self.joined_tables
+            .iter()
+            .find(|t| t.identifier == identifier)
+            .map(|t| &t.table)
+            .or_else(|| {
+                self.outer_query_refs
+                    .iter()
+                    .find(|t| t.identifier == identifier)
+                    .map(|t| &t.table)
+            })
+    }
+
+    /// Returns an immutable reference to the [OuterQueryReference] with the given identifier,
+    /// where identifier is either the literal name of the table or an alias.
+    pub fn find_outer_query_ref_by_identifier(
+        &self,
+        identifier: &str,
+    ) -> Option<&OuterQueryReference> {
+        self.outer_query_refs
+            .iter()
+            .find(|t| t.identifier == identifier)
+    }
+
+    /// Returns the internal ID and immutable reference to the [Table] with the given identifier,
+    pub fn find_table_and_internal_id_by_identifier(
+        &self,
+        identifier: &str,
+    ) -> Option<(TableInternalId, &Table)> {
+        self.joined_tables
+            .iter()
+            .find(|t| t.identifier == identifier)
+            .map(|t| (t.internal_id, &t.table))
+            .or_else(|| {
+                self.outer_query_refs
+                    .iter()
+                    .find(|t| t.identifier == identifier)
+                    .map(|t| (t.internal_id, &t.table))
+            })
+    }
+
+    /// Returns an immutable reference to the [JoinedTable] with the given internal ID.
+    pub fn find_joined_table_by_internal_id(
+        &self,
+        internal_id: TableInternalId,
+    ) -> Option<&JoinedTable> {
+        self.joined_tables
+            .iter()
+            .find(|t| t.internal_id == internal_id)
+    }
+
+    /// Returns a mutable reference to the [JoinedTable] with the given internal ID.
+    pub fn find_joined_table_by_internal_id_mut(
+        &mut self,
+        internal_id: TableInternalId,
+    ) -> Option<&mut JoinedTable> {
+        self.joined_tables
+            .iter_mut()
+            .find(|t| t.internal_id == internal_id)
+    }
+
+    /// Marks a column as used; used means that the column is referenced in the query.
+    pub fn mark_column_used(&mut self, internal_id: TableInternalId, column_index: usize) {
+        if let Some(joined_table) = self.find_joined_table_by_internal_id_mut(internal_id) {
+            joined_table.mark_column_used(column_index);
+        } else if let Some(outer_query_ref) =
+            self.find_outer_query_ref_by_internal_id_mut(internal_id)
+        {
+            outer_query_ref.mark_column_used(column_index);
+        } else {
+            panic!(
+                "table with internal id {} not found in table references",
+                internal_id
+            );
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -717,7 +918,7 @@ impl Operation {
     }
 }
 
-impl TableReference {
+impl JoinedTable {
     /// Returns the btree table for this table reference, if it is a BTreeTable.
     pub fn btree(&self) -> Option<Rc<BTreeTable>> {
         match &self.table {
