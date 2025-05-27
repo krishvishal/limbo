@@ -309,18 +309,22 @@ fn generate_plan(opts: &Opts) -> Result<Plan, Box<dyn std::error::Error + Send +
         nr_iterations: opts.nr_iterations,
         nr_threads: opts.nr_threads,
     };
-    writeln!(log_file, "{}", opts.nr_threads)?;
-    writeln!(log_file, "{}", opts.nr_iterations)?;
-    writeln!(log_file, "{}", ddl_statements.len())?;
-    for stmt in &ddl_statements {
-        writeln!(log_file, "{}", stmt)?;
+    if !opts.skip_log {
+        writeln!(log_file, "{}", opts.nr_threads)?;
+        writeln!(log_file, "{}", opts.nr_iterations)?;
+        writeln!(log_file, "{}", ddl_statements.len())?;
+        for stmt in &ddl_statements {
+            writeln!(log_file, "{}", stmt)?;
+        }
     }
     plan.ddl_statements = ddl_statements;
     for _ in 0..opts.nr_threads {
         let mut queries = vec![];
         for _ in 0..opts.nr_iterations {
             let sql = generate_random_statement(&schema);
-            writeln!(log_file, "{}", sql)?;
+            if !opts.skip_log {
+                writeln!(log_file, "{}", sql)?;
+            }
             queries.push(sql);
         }
         plan.queries_per_thread.push(queries);

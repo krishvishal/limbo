@@ -35,6 +35,15 @@ pub struct Opts {
     )]
     pub load_log: bool,
 
+    /// Skip writing to log file
+    #[clap(
+        short = 's',
+        long = "skip-log",
+        help = "load log file instead of creating a new one",
+        default_value_t = false
+    )]
+    pub skip_log: bool,
+
     /// Database file
     #[clap(
         short = 'd',
