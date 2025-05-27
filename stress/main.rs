@@ -320,7 +320,7 @@ fn generate_plan(opts: &Opts) -> Result<Plan, Box<dyn std::error::Error + Send +
         let mut queries = vec![];
         for _ in 0..opts.nr_iterations {
             let sql = generate_random_statement(&schema);
-            // writeln!(log_file, "{}", sql)?;
+            writeln!(log_file, "{}", sql)?;
             queries.push(sql);
         }
         plan.queries_per_thread.push(queries);
