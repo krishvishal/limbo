@@ -34,11 +34,11 @@ jobs:
     timeout-minutes: 0
     steps:
     - uses: actions/checkout@v3
-    - uses: Swatinem/rust-cache@v2
+    - uses: useblacksmith/rust-cache@v3
       with:
         prefix-key: "v1-rust"
     - name: Set up Python 3.10
-      uses: actions/setup-python@v5
+      uses: useblacksmith/setup-python@v6
       with:
         python-version: "3.10"
     - name: Build
