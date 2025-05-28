@@ -249,6 +249,13 @@ impl ProgramBuilder {
     }
 
     pub fn alloc_cursor_id_keyed(&mut self, key: CursorKey, cursor_type: CursorType) -> usize {
+        assert!(
+            !self
+                .cursor_ref
+                .iter()
+                .any(|(k, _)| k.as_ref().map_or(false, |k| k.equals(&key))),
+            "duplicate cursor key"
+        );
         self._alloc_cursor_id(Some(key), cursor_type)
     }
 
