@@ -10,7 +10,7 @@ use limbo_sqlite3_parser::ast::{self, TableInternalId};
 use crate::{
     fast_lock::SpinLock,
     parameters::Parameters,
-    schema::{BTreeTable, Index, PseudoTable, Schema, Table},
+    schema::{BTreeTable, Index, PseudoTable, Table},
     storage::sqlite3_ondisk::DatabaseHeader,
     translate::{
         collate::CollationSeq,
@@ -37,10 +37,51 @@ impl TableRefIdCounter {
     }
 }
 
-use super::{
-    insn::RegisterOrLiteral, BranchOffset, CursorID, Insn, InsnFunction, InsnReference, JumpTarget,
-    Program,
-};
+use super::{BranchOffset, CursorID, Insn, InsnFunction, InsnReference, JumpTarget, Program};
+
+/// A key that uniquely identifies a cursor.
+/// The key is a pair of table reference id and index.
+/// The index is only provided when the cursor is an index cursor.
+#[derive(Debug, Clone)]
+pub struct CursorKey {
+    /// The table reference that the cursor is associated with.
+    /// We cannot use e.g. the table query identifier (e.g. 'users' or 'u')
+    /// because it might be ambiguous, e.g. this silly example:
+    /// `SELECT * FROM t WHERE EXISTS (SELECT * from t)` <-- two different cursors, which 't' should we use as key?
+    ///  TableInternalIds are unique within a program, since there is one id per table reference.
+    pub table_reference_id: TableInternalId,
+    /// The index, in case of an index cursor.
+    /// The combination of table internal id and index is enough to disambiguate.
+    pub index: Option<Arc<Index>>,
+}
+
+impl CursorKey {
+    pub fn table(table_reference_id: TableInternalId) -> Self {
+        Self {
+            table_reference_id,
+            index: None,
+        }
+    }
+
+    pub fn index(table_reference_id: TableInternalId, index: Arc<Index>) -> Self {
+        Self {
+            table_reference_id,
+            index: Some(index),
+        }
+    }
+
+    pub fn equals(&self, other: &CursorKey) -> bool {
+        if self.table_reference_id != other.table_reference_id {
+            return false;
+        }
+        match (self.index.as_ref(), other.index.as_ref()) {
+            (Some(self_index), Some(other_index)) => self_index.name == other_index.name,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub struct ProgramBuilder {
     pub table_reference_counter: TableRefIdCounter,
@@ -52,8 +93,11 @@ pub struct ProgramBuilder {
     /// that are deemed to be compile-time constant and can be hoisted out of loops
     /// so that they get evaluated only once at the start of the program.
     pub constant_spans: Vec<(usize, usize)>,
-    // Cursors that are referenced by the program. Indexed by CursorID.
-    pub cursor_ref: Vec<(Option<String>, CursorType)>,
+    /// Cursors that are referenced by the program. Indexed by [CursorKey].
+    /// Certain types of cursors do not need a [CursorKey] (e.g. temp tables, sorter),
+    /// because they never need to use [ProgramBuilder::resolve_cursor_id] to find it
+    /// again. Hence, the key is optional.
+    pub cursor_ref: Vec<(Option<CursorKey>, CursorType)>,
     /// A vector where index=label number, value=resolved offset. Resolved in build().
     label_to_resolved_offset: Vec<Option<(InsnReference, JumpTarget)>>,
     // Bitmask of cursors that have emitted a SeekRowid instruction.
@@ -204,14 +248,18 @@ impl ProgramBuilder {
         reg
     }
 
-    pub fn alloc_cursor_id(
-        &mut self,
-        table_identifier: Option<String>,
-        cursor_type: CursorType,
-    ) -> usize {
+    pub fn alloc_cursor_id_keyed(&mut self, key: CursorKey, cursor_type: CursorType) -> usize {
+        self._alloc_cursor_id(Some(key), cursor_type)
+    }
+
+    pub fn alloc_cursor_id(&mut self, cursor_type: CursorType) -> usize {
+        self._alloc_cursor_id(None, cursor_type)
+    }
+
+    fn _alloc_cursor_id(&mut self, key: Option<CursorKey>, cursor_type: CursorType) -> usize {
         let cursor = self.next_free_cursor_id;
         self.next_free_cursor_id += 1;
-        self.cursor_ref.push((table_identifier, cursor_type));
+        self.cursor_ref.push((key, cursor_type));
         assert_eq!(self.cursor_ref.len(), self.next_free_cursor_id);
         cursor
     }
@@ -611,18 +659,16 @@ impl ProgramBuilder {
         self.label_to_resolved_offset.clear();
     }
 
-    // translate table to cursor id
-    pub fn resolve_cursor_id_safe(&self, table_identifier: &str) -> Option<CursorID> {
-        self.cursor_ref.iter().position(|(t_ident, _)| {
-            t_ident
-                .as_ref()
-                .is_some_and(|ident| ident == table_identifier)
-        })
+    // translate [CursorKey] to cursor id
+    pub fn resolve_cursor_id_safe(&self, key: &CursorKey) -> Option<CursorID> {
+        self.cursor_ref
+            .iter()
+            .position(|(k, _)| k.as_ref().map_or(false, |k| k.equals(key)))
     }
 
-    pub fn resolve_cursor_id(&self, table_identifier: &str) -> CursorID {
-        self.resolve_cursor_id_safe(table_identifier)
-            .unwrap_or_else(|| panic!("Cursor not found: {}", table_identifier))
+    pub fn resolve_cursor_id(&self, key: &CursorKey) -> CursorID {
+        self.resolve_cursor_id_safe(key)
+            .unwrap_or_else(|| panic!("Cursor not found: {:?}", key))
     }
 
     pub fn set_collation(&mut self, c: Option<(CollationSeq, bool)>) {
@@ -686,63 +732,8 @@ impl ProgramBuilder {
     }
 
     /// Checks whether `table` or any of its indices has been opened in the program
-    pub fn is_table_open(&self, table: &Table, schema: &Schema) -> bool {
-        let btree = table.btree();
-        let vtab = table.virtual_table();
-        for (insn, ..) in self.insns.iter() {
-            match insn {
-                Insn::OpenRead {
-                    cursor_id,
-                    root_page,
-                    ..
-                } => {
-                    if let Some(btree) = &btree {
-                        if btree.root_page == *root_page {
-                            return true;
-                        }
-                    }
-                    let name = self.cursor_ref[*cursor_id].0.as_ref();
-                    if name.is_none() {
-                        continue;
-                    }
-                    let name = name.unwrap();
-                    let indices = schema.get_indices(name);
-                    for index in indices {
-                        if index.root_page == *root_page {
-                            return true;
-                        }
-                    }
-                }
-                Insn::OpenWrite {
-                    root_page, name, ..
-                } => {
-                    let RegisterOrLiteral::Literal(root_page) = root_page else {
-                        unreachable!("root page can only be a literal");
-                    };
-                    if let Some(btree) = &btree {
-                        if btree.root_page == *root_page {
-                            return true;
-                        }
-                    }
-                    let indices = schema.get_indices(name);
-                    for index in indices {
-                        if index.root_page == *root_page {
-                            return true;
-                        }
-                    }
-                }
-                Insn::VOpen { cursor_id, .. } => {
-                    if let Some(vtab) = &vtab {
-                        let name = self.cursor_ref[*cursor_id].0.as_ref().unwrap();
-                        if vtab.name == *name {
-                            return true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        false
+    pub fn is_table_open(&self, table: &Table) -> bool {
+        self.table_references.iter().any(|t| t.table == *table)
     }
 
     pub fn build(

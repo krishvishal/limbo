@@ -117,7 +117,7 @@ pub fn init_group_by(
     let reg_group_by_source_cols_start = program.alloc_registers(column_count);
 
     let row_source = if let Some(sort_order) = group_by.sort_order.as_ref() {
-        let sort_cursor = program.alloc_cursor_id(None, CursorType::Sorter);
+        let sort_cursor = program.alloc_cursor_id(CursorType::Sorter);
         let sorter_column_count = plan.group_by_sorter_column_count();
         // Should work the same way as Order By
         /*
@@ -262,7 +262,7 @@ pub fn group_by_create_pseudo_table(
         columns: pseudo_columns,
     });
 
-    program.alloc_cursor_id(None, CursorType::Pseudo(pseudo_table.clone()))
+    program.alloc_cursor_id(CursorType::Pseudo(pseudo_table.clone()))
 }
 
 /// In case sorting is needed for GROUP BY, sorts the rows in the GROUP BY sorter

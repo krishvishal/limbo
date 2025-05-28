@@ -121,10 +121,7 @@ pub fn translate_insert(
             {
                 (
                     values.as_ref().unwrap().len(),
-                    program.alloc_cursor_id(
-                        Some(table_name.0.clone()),
-                        CursorType::BTreeTable(btree_table.clone()),
-                    ),
+                    program.alloc_cursor_id(CursorType::BTreeTable(btree_table.clone())),
                 )
             } else {
                 // Multiple rows - use coroutine for value population
@@ -158,12 +155,8 @@ pub fn translate_insert(
                 program.emit_insn(Insn::EndCoroutine { yield_reg });
                 program.preassign_label_to_next_insn(jump_on_definition_label);
 
-                // Have to allocate the cursor here to avoid having `init_loop` inside `translate_select` selecting the incorrect
-                // cursor_id
-                let cursor_id = program.alloc_cursor_id(
-                    Some(table_name.0.clone()),
-                    CursorType::BTreeTable(btree_table.clone()),
-                );
+                let cursor_id =
+                    program.alloc_cursor_id(CursorType::BTreeTable(btree_table.clone()));
 
                 // From SQLite
                 /* Set useTempTable to TRUE if the result of the SELECT statement
@@ -175,11 +168,9 @@ pub fn translate_insert(
                  ** of the tables being read by the SELECT statement.  Also use a
                  ** temp table in the case of row triggers.
                  */
-                if program.is_table_open(&table, schema) {
-                    let temp_cursor_id = program.alloc_cursor_id(
-                        Some("temp table".to_string()),
-                        CursorType::BTreeTable(btree_table.clone()),
-                    );
+                if program.is_table_open(&table) {
+                    let temp_cursor_id =
+                        program.alloc_cursor_id(CursorType::BTreeTable(btree_table.clone()));
                     temp_table_ctx = Some(TempTableCtx {
                         cursor_id: temp_cursor_id,
                         loop_start_label: program.allocate_label(),
@@ -260,10 +251,7 @@ pub fn translate_insert(
         }
         InsertBody::DefaultValues => (
             0,
-            program.alloc_cursor_id(
-                Some(table_name.0.clone()),
-                CursorType::BTreeTable(btree_table.clone()),
-            ),
+            program.alloc_cursor_id(CursorType::BTreeTable(btree_table.clone())),
         ),
     };
 
@@ -276,10 +264,7 @@ pub fn translate_insert(
             (
                 &idx.name,
                 idx.root_page,
-                program.alloc_cursor_id(
-                    Some(table_name.0.clone()),
-                    CursorType::BTreeIndex(idx.clone()),
-                ),
+                program.alloc_cursor_id(CursorType::BTreeIndex(idx.clone())),
             )
         })
         .collect::<Vec<(&String, usize, usize)>>();
@@ -882,10 +867,7 @@ fn translate_virtual_table_insert(
     )?;
     let conflict_action = on_conflict.as_ref().map(|c| c.bit_value()).unwrap_or(0) as u16;
 
-    let cursor_id = program.alloc_cursor_id(
-        Some(virtual_table.name.clone()),
-        CursorType::VirtualTable(virtual_table.clone()),
-    );
+    let cursor_id = program.alloc_cursor_id(CursorType::VirtualTable(virtual_table.clone()));
 
     program.emit_insn(Insn::VUpdate {
         cursor_id,

@@ -27,7 +27,7 @@ use crate::schema::{Index, IndexColumn, Schema};
 use crate::translate::plan::{DeletePlan, Plan, Search};
 use crate::translate::values::emit_values;
 use crate::util::exprs_are_equivalent;
-use crate::vdbe::builder::{CursorType, ProgramBuilder};
+use crate::vdbe::builder::{CursorKey, CursorType, ProgramBuilder};
 use crate::vdbe::insn::{CmpInsFlags, IdxInsertFlags, RegisterOrLiteral};
 use crate::vdbe::{insn::Insn, BranchOffset};
 use crate::{Result, SymbolTable};
@@ -212,7 +212,7 @@ fn emit_program_for_compound_select(
         if limit == 0 {
             program.epilogue(TransactionMode::Read);
             program.result_columns = first.result_columns;
-            program.table_references = first.table_references;
+            program.table_references.extend(first.table_references);
             return Ok(());
         }
     }
@@ -370,7 +370,7 @@ fn emit_program_for_compound_select(
 
     program.epilogue(TransactionMode::Read);
     program.result_columns = first.result_columns;
-    program.table_references = first.table_references;
+    program.table_references.extend(first.table_references);
 
     Ok(())
 }
@@ -402,10 +402,7 @@ fn get_union_dedupe_index(
         unique: true,
         has_rowid: false,
     });
-    let cursor_id = program.alloc_cursor_id(
-        Some(dedupe_index.name.clone()),
-        CursorType::BTreeIndex(dedupe_index.clone()),
-    );
+    let cursor_id = program.alloc_cursor_id(CursorType::BTreeIndex(dedupe_index.clone()));
     program.emit_insn(Insn::OpenEphemeral {
         cursor_id,
         is_table: false,
@@ -487,7 +484,7 @@ fn emit_program_for_select(
         if limit == 0 {
             program.epilogue(TransactionMode::Read);
             program.result_columns = plan.result_columns;
-            program.table_references = plan.table_references;
+            program.table_references.extend(plan.table_references);
             return Ok(());
         }
     }
@@ -502,7 +499,7 @@ fn emit_program_for_select(
     }
 
     program.result_columns = plan.result_columns;
-    program.table_references = plan.table_references;
+    program.table_references.extend(plan.table_references);
     Ok(())
 }
 
@@ -658,7 +655,7 @@ fn emit_program_for_delete(
     if let Some(0) = plan.limit {
         program.epilogue(TransactionMode::Write);
         program.result_columns = plan.result_columns;
-        program.table_references = plan.table_references;
+        program.table_references.extend(plan.table_references);
         return Ok(());
     }
 
@@ -705,7 +702,7 @@ fn emit_program_for_delete(
     // Finalize program
     program.epilogue(TransactionMode::Write);
     program.result_columns = plan.result_columns;
-    program.table_references = plan.table_references;
+    program.table_references.extend(plan.table_references);
     Ok(())
 }
 
@@ -717,17 +714,23 @@ fn emit_delete_insns(
 ) -> Result<()> {
     let table_reference = table_references.first().unwrap();
     let cursor_id = match &table_reference.op {
-        Operation::Scan { .. } => program.resolve_cursor_id(&table_reference.identifier),
+        Operation::Scan { .. } => {
+            program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id))
+        }
         Operation::Search(search) => match search {
             Search::RowidEq { .. } | Search::Seek { index: None, .. } => {
-                program.resolve_cursor_id(&table_reference.identifier)
+                program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id))
             }
             Search::Seek {
                 index: Some(index), ..
-            } => program.resolve_cursor_id(&index.name),
+            } => program.resolve_cursor_id(&CursorKey::index(
+                table_reference.internal_id,
+                index.clone(),
+            )),
         },
     };
-    let main_table_cursor_id = program.resolve_cursor_id(table_reference.table.get_name());
+    let main_table_cursor_id =
+        program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id));
 
     // Emit the instructions to delete the row
     let key_reg = program.alloc_register();
@@ -753,10 +756,7 @@ fn emit_delete_insns(
         });
     } else {
         for index in index_references {
-            let index_cursor_id = program.alloc_cursor_id(
-                Some(index.name.clone()),
-                crate::vdbe::builder::CursorType::BTreeIndex(index.clone()),
-            );
+            let index_cursor_id = program.alloc_cursor_id(CursorType::BTreeIndex(index.clone()));
 
             program.emit_insn(Insn::OpenWrite {
                 cursor_id: index_cursor_id,
@@ -819,7 +819,7 @@ fn emit_program_for_update(
     if let Some(0) = plan.limit {
         program.epilogue(TransactionMode::None);
         program.result_columns = plan.returning.unwrap_or_default();
-        program.table_references = plan.table_references;
+        program.table_references.extend(plan.table_references);
         return Ok(());
     }
 
@@ -845,10 +845,7 @@ fn emit_program_for_update(
     // TODO: do not reopen if there is table reference using it.
 
     for index in &plan.indexes_to_update {
-        let index_cursor = program.alloc_cursor_id(
-            Some(index.table_name.clone()),
-            CursorType::BTreeIndex(index.clone()),
-        );
+        let index_cursor = program.alloc_cursor_id(CursorType::BTreeIndex(index.clone()));
         program.emit_insn(Insn::OpenWrite {
             cursor_id: index_cursor,
             root_page: RegisterOrLiteral::Literal(index.root_page),
@@ -888,7 +885,7 @@ fn emit_program_for_update(
     // Finalize program
     program.epilogue(TransactionMode::Write);
     program.result_columns = plan.returning.unwrap_or_default();
-    program.table_references = plan.table_references;
+    program.table_references.extend(plan.table_references);
     Ok(())
 }
 
@@ -901,22 +898,32 @@ fn emit_update_insns(
     let table_ref = &plan.table_references.first().unwrap();
     let loop_labels = t_ctx.labels_main_loop.first().unwrap();
     let (cursor_id, index, is_virtual) = match &table_ref.op {
-        Operation::Scan { .. } => (
-            program.resolve_cursor_id(&table_ref.identifier),
-            None,
+        Operation::Scan { index, .. } => (
+            program.resolve_cursor_id(&CursorKey::table(table_ref.internal_id)),
+            index.as_ref().map(|index| {
+                (
+                    index.clone(),
+                    program
+                        .resolve_cursor_id(&CursorKey::index(table_ref.internal_id, index.clone())),
+                )
+            }),
             table_ref.virtual_table().is_some(),
         ),
         Operation::Search(search) => match search {
             &Search::RowidEq { .. } | Search::Seek { index: None, .. } => (
-                program.resolve_cursor_id(&table_ref.identifier),
+                program.resolve_cursor_id(&CursorKey::table(table_ref.internal_id)),
                 None,
                 false,
             ),
             Search::Seek {
                 index: Some(index), ..
             } => (
-                program.resolve_cursor_id(&table_ref.identifier),
-                Some((index.clone(), program.resolve_cursor_id(&index.name))),
+                program.resolve_cursor_id(&CursorKey::table(table_ref.internal_id)),
+                Some((
+                    index.clone(),
+                    program
+                        .resolve_cursor_id(&CursorKey::index(table_ref.internal_id, index.clone())),
+                )),
                 false,
             ),
         },

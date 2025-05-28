@@ -9,6 +9,7 @@ use crate::function::{Func, FuncCtx, MathFuncArity, ScalarFunc, VectorFunc};
 use crate::functions::datetime;
 use crate::schema::{Table, Type};
 use crate::util::{exprs_are_equivalent, normalize_ident, parse_numeric_literal};
+use crate::vdbe::builder::CursorKey;
 use crate::vdbe::{
     builder::ProgramBuilder,
     insn::{CmpInsFlags, Insn},
@@ -1813,9 +1814,17 @@ pub fn translate_expr(
                     let table_cursor_id = if use_covering_index {
                         None
                     } else {
-                        Some(program.resolve_cursor_id(&table_reference.identifier))
+                        Some(
+                            program
+                                .resolve_cursor_id(&CursorKey::table(table_reference.internal_id)),
+                        )
                     };
-                    let index_cursor_id = index.map(|index| program.resolve_cursor_id(&index.name));
+                    let index_cursor_id = index.map(|index| {
+                        program.resolve_cursor_id(&CursorKey::index(
+                            table_reference.internal_id,
+                            index.clone(),
+                        ))
+                    });
                     if *is_rowid_alias {
                         if let Some(index_cursor_id) = index_cursor_id {
                             program.emit_insn(Insn::IdxRowId {
@@ -1876,7 +1885,8 @@ pub fn translate_expr(
                     Ok(target_register)
                 }
                 Table::Virtual(_) => {
-                    let cursor_id = program.resolve_cursor_id(&table_reference.identifier);
+                    let cursor_id =
+                        program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id));
                     program.emit_insn(Insn::VColumn {
                         cursor_id,
                         column: *column,
@@ -1899,13 +1909,17 @@ pub fn translate_expr(
             if use_covering_index {
                 let index =
                     index.expect("index cursor should be opened when use_covering_index=true");
-                let cursor_id = program.resolve_cursor_id(&index.name);
+                let cursor_id = program.resolve_cursor_id(&CursorKey::index(
+                    table_reference.internal_id,
+                    index.clone(),
+                ));
                 program.emit_insn(Insn::IdxRowId {
                     cursor_id,
                     dest: target_register,
                 });
             } else {
-                let cursor_id = program.resolve_cursor_id(&table_reference.identifier);
+                let cursor_id =
+                    program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id));
                 program.emit_insn(Insn::RowId {
                     cursor_id,
                     dest: target_register,

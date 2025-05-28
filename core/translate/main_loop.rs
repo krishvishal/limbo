@@ -92,10 +92,7 @@ pub fn init_distinct(program: &mut ProgramBuilder, plan: &mut SelectPlan) {
             unique: false,
             has_rowid: false,
         });
-        let cursor_id = program.alloc_cursor_id(
-            Some(index_name.clone()),
-            CursorType::BTreeIndex(index.clone()),
-        );
+        let cursor_id = program.alloc_cursor_id(CursorType::BTreeIndex(index.clone()));
         *ctx = Some(DistinctCtx {
             cursor_id,
             ephemeral_index_name: index_name,
@@ -147,10 +144,7 @@ pub fn init_loop(
             has_rowid: false,
             unique: false,
         });
-        let cursor_id = program.alloc_cursor_id(
-            Some(index_name.clone()),
-            CursorType::BTreeIndex(index.clone()),
-        );
+        let cursor_id = program.alloc_cursor_id(CursorType::BTreeIndex(index.clone()));
         if group_by.is_none() {
             // In GROUP BY, the ephemeral index is reinitialized for every group
             // in the clear accumulator subroutine, so we only do it here if there is no GROUP BY.

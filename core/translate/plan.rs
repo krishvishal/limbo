@@ -14,7 +14,7 @@ use crate::{
     schema::{BTreeTable, Column, FromClauseSubquery, Index, Table},
     util::exprs_are_equivalent,
     vdbe::{
-        builder::{CursorType, ProgramBuilder},
+        builder::{CursorKey, CursorType, ProgramBuilder},
         insn::{IdxInsertFlags, Insn},
         BranchOffset, CursorID,
     },
@@ -802,14 +802,14 @@ impl TableReference {
                 let table_cursor_id = if table_not_required {
                     None
                 } else {
-                    Some(program.alloc_cursor_id(
-                        Some(self.identifier.clone()),
+                    Some(program.alloc_cursor_id_keyed(
+                        CursorKey::table(self.internal_id),
                         CursorType::BTreeTable(btree.clone()),
                     ))
                 };
                 let index_cursor_id = if let Some(index) = index {
-                    Some(program.alloc_cursor_id(
-                        Some(index.name.clone()),
+                    Some(program.alloc_cursor_id_keyed(
+                        CursorKey::index(self.internal_id, index.clone()),
                         CursorType::BTreeIndex(index.clone()),
                     ))
                 } else {
@@ -818,8 +818,8 @@ impl TableReference {
                 Ok((table_cursor_id, index_cursor_id))
             }
             Table::Virtual(virtual_table) => {
-                let table_cursor_id = Some(program.alloc_cursor_id(
-                    Some(self.identifier.clone()),
+                let table_cursor_id = Some(program.alloc_cursor_id_keyed(
+                    CursorKey::table(self.internal_id),
                     CursorType::VirtualTable(virtual_table.clone()),
                 ));
                 let index_cursor_id = None;
@@ -836,8 +836,10 @@ impl TableReference {
         program: &mut ProgramBuilder,
     ) -> Result<(Option<CursorID>, Option<CursorID>)> {
         let index = self.op.index();
-        let table_cursor_id = program.resolve_cursor_id_safe(&self.identifier);
-        let index_cursor_id = index.map(|index| program.resolve_cursor_id(&index.name));
+        let table_cursor_id = program.resolve_cursor_id_safe(&CursorKey::table(self.internal_id));
+        let index_cursor_id = index.map(|index| {
+            program.resolve_cursor_id(&CursorKey::index(self.internal_id, index.clone()))
+        });
         Ok((table_cursor_id, index_cursor_id))
     }
 

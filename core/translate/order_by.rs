@@ -36,7 +36,7 @@ pub fn init_order_by(
     order_by: &[(ast::Expr, SortOrder)],
     referenced_tables: &[TableReference],
 ) -> Result<()> {
-    let sort_cursor = program.alloc_cursor_id(None, CursorType::Sorter);
+    let sort_cursor = program.alloc_cursor_id(CursorType::Sorter);
     t_ctx.meta_sort = Some(SortMetadata {
         sort_cursor,
         reg_sorter_data: program.alloc_register(),
@@ -137,7 +137,7 @@ pub fn emit_order_by(
     let pseudo_table = Rc::new(PseudoTable {
         columns: pseudo_columns,
     });
-    let pseudo_cursor = program.alloc_cursor_id(None, CursorType::Pseudo(pseudo_table.clone()));
+    let pseudo_cursor = program.alloc_cursor_id(CursorType::Pseudo(pseudo_table.clone()));
     let SortMetadata {
         sort_cursor,
         reg_sorter_data,
