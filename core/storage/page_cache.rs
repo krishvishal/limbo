@@ -7,13 +7,6 @@ use super::pager::PageRef;
 
 const DEFAULT_PAGE_CACHE_SIZE_IN_PAGES: usize = 2000;
 
-// In limbo, page cache is shared by default, meaning that multiple frames from WAL can reside in
-// the cache, meaning, we need a way to differentiate between pages cached in different
-// connections. For this we include the max_frame that a connection will read from so that if two
-// connections have different max_frames, they might or not have different frame read from WAL.
-//
-// WAL was introduced after Shared cache in SQLite, so this is why these two features don't work
-// well together because pages with different snapshots may collide.
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub struct PageCacheKey {
     pgno: usize,
