@@ -2022,13 +2022,16 @@ pub fn op_seek_rowid(
             Value::Integer(rowid) => Some(*rowid),
             Value::Null => None,
             // For non-integer values try to apply affinity and convert them to integer.
+            // For non-integer values try to apply affinity and convert them to integer.
             other => {
                 let mut temp_reg = Register::Value(other.clone());
                 let converted = apply_affinity_char(&mut temp_reg, Affinity::Numeric);
+                println!("type of reg: {:?}", temp_reg.get_owned_value());
                 if converted {
                     match temp_reg.get_owned_value() {
                         Value::Integer(i) => Some(*i as u64),
-                        Value::Float(f) => None,
+                        Value::Float(f) => {println!("float: {f}");
+                                                    Some(*f as u64)}
                         _ => unreachable!("apply_affinity_char with Numeric should produce an integer if it returns true"),
                     }
                 } else {
@@ -5658,10 +5661,11 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                         return false;
                     }
 
-                    // Try to parse as number (similar to applyNumericAffinity)
-                    let Ok(num) = checked_cast_text_to_numeric(text) else {
+                    let text = value.to_text().unwrap();
+                    let Ok(num) = checked_cast_text_to_numeric(&text) else {
                         return false;
                     };
+                    println!("casted int = {:?}", num.clone());
 
                     match num {
                         Value::Integer(i) => {
