@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import tempfile
 from cli_tests.test_limbo_cli import TestLimboShell
 from pydantic import BaseModel
 from cli_tests import console
@@ -14,7 +15,7 @@ class InsertTest(BaseModel):
     blob_size: int = 1024**2
     vals: int = 100
     has_blob: bool = True
-    db_path: str = "testing/writes.db"
+    db_path: str = ""
 
     def run(self, limbo: TestLimboShell):
         zero_blob = "0" * self.blob_size * 2
@@ -135,21 +136,22 @@ def main():
     tests = blob_tests()
     for test in tests:
         console.info(test)
-        db_path = test.db_path
-        try:
-            # Use with syntax to automatically close shell on error
-            with TestLimboShell("") as limbo:
-                limbo.execute_dot(f".open {db_path}")
-                test.run(limbo)
+        with tempfile.NamedTemporaryFile(suffix='.db') as tmp:
+            test.db_path = tmp.name
+            try:
+                # Use with syntax to automatically close shell on error
+                with TestLimboShell("") as limbo:
+                    limbo.execute_dot(f".open {test.db_path}")
+                    test.run(limbo)
 
-            test.test_compat()
+                test.test_compat()
 
-        except Exception as e:
-            console.error(f"Test FAILED: {e}")
-            cleanup(db_path)
-            exit(1)
-        # delete db after every compat test so we we have fresh db for next test
-        cleanup(db_path)
+            except Exception as e:
+                console.error(f"Test FAILED: {e}")
+                cleanup(test.db_path)
+                exit(1)
+            # delete db after every compat test so we we have fresh db for next test
+            cleanup(test.db_path)
     console.info("All tests passed successfully.")
 
 
