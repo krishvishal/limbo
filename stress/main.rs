@@ -438,6 +438,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         limbo::Error::SqlExecutionFailure(e) => {
                             if e.contains("Corrupt database") {
                                 panic!("Error executing query: {}", e);
+                            } else if e.contains("UNIQUE constraint failed") {
+                                println!("Skipping UNIQUE constraint violation: {}", e);
+                                continue;
                             } else {
                                 println!("Error executing query: {}", e);
                             }
