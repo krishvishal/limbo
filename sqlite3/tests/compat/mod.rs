@@ -203,18 +203,16 @@ mod tests {
 
     #[cfg(not(feature = "sqlite3"))]
     mod libsql_ext {
-        use libc::tm;
-
         use super::*;
 
         #[test]
         fn test_wal_frame_count() {
             unsafe {
+                let temp_file = tempfile::NamedTempFile::with_suffix(".db").unwrap();
+                let path = temp_file.path();
+                let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
                 let mut db = ptr::null_mut();
-                assert_eq!(
-                    sqlite3_open(c"../testing/test_wal_frame_count.db".as_ptr(), &mut db),
-                    SQLITE_OK
-                );
+                assert_eq!(sqlite3_open(c_path.as_ptr(), &mut db), SQLITE_OK);
                 // Ensure that WAL is initially empty.
                 let mut frame_count = 0;
                 assert_eq!(libsql_wal_frame_count(db, &mut frame_count), SQLITE_OK);
@@ -257,7 +255,7 @@ mod tests {
         fn test_read_frame() {
             unsafe {
                 let mut db = ptr::null_mut();
-                let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+                let temp_file = tempfile::NamedTempFile::with_suffix(".db").unwrap();
                 let path = temp_file.path();
                 let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
                 assert_eq!(sqlite3_open(c_path.as_ptr(), &mut db), SQLITE_OK);
