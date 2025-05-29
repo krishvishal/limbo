@@ -2025,12 +2025,10 @@ pub fn op_seek_rowid(
             other => {
                 let mut temp_reg = Register::Value(other.clone());
                 let converted = apply_affinity_char(&mut temp_reg, Affinity::Numeric);
-                println!("type of reg: {:?}", temp_reg.get_owned_value());
                 if converted {
                     match temp_reg.get_owned_value() {
                         Value::Integer(i) => Some(*i as u64),
-                        Value::Float(f) => {println!("float: {f}");
-                                                    Some(*f as u64)}
+                        Value::Float(f) => None,
                         _ => unreachable!("apply_affinity_char with Numeric should produce an integer if it returns true"),
                     }
                 } else {
@@ -5564,8 +5562,10 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
         if matches!(value, Value::Blob(_)) {
             return true;
         }
+
         match affinity {
             Affinity::Blob => return true,
+
             Affinity::Text => {
                 if matches!(value, Value::Text(_) | Value::Null) {
                     return true;
@@ -5574,6 +5574,7 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                 *value = Value::Text(text.into());
                 return true;
             }
+
             Affinity::Integer | Affinity::Numeric => {
                 if matches!(value, Value::Integer(_)) {
                     return true;
@@ -5583,50 +5584,60 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                 }
 
                 if let Value::Float(fl) = *value {
-                    if let Ok(int) = cast_real_to_integer(fl).map(Value::Integer) {
-                        *value = int;
-                        return true;
+                    if let Ok(int) = cast_real_to_integer(fl) {
+                        *value = Value::Integer(int);
                     }
-                    return false;
+                    return true;
                 }
 
-                let text = value.to_text().unwrap();
-                let Ok(num) = checked_cast_text_to_numeric(&text) else {
-                    return false;
-                };
-                println!("casted int = {:?}", num.clone());
-
-                *value = match &num {
-                    Value::Float(fl) => {
-                        cast_real_to_integer(*fl).map(Value::Integer).unwrap_or(num);
-                        return true;
-                    }
-                    Value::Integer(_) if text.starts_with("0x") => {
+                if let Value::Text(t) = value {
+                    let text = t.as_str();
+                    let Ok(num) = checked_cast_text_to_numeric(text) else {
                         return false;
-                    }
-                    _ => num,
-                };
+                    };
+
+                    *value = match num {
+                        Value::Float(fl) => cast_real_to_integer(fl)
+                            .map(Value::Integer)
+                            .unwrap_or(Value::Float(fl)),
+                        Value::Integer(i) => {
+                            if text.starts_with("0x") {
+                                return false;
+                            }
+                            Value::Integer(i)
+                        }
+                        other => other,
+                    };
+
+                    return true;
+                }
+
+                return false;
             }
 
             Affinity::Real => {
-                if let Value::Integer(i) = value {
-                    *value = Value::Float(*i as f64);
+                if let Value::Integer(i) = *value {
+                    *value = Value::Float(i as f64);
                     return true;
-                } else if let Value::Text(t) = value {
-                    if t.as_str().starts_with("0x") {
+                }
+                if let Value::Text(t) = value {
+                    let s = t.as_str();
+                    if s.starts_with("0x") {
                         return false;
                     }
-                    if let Ok(num) = checked_cast_text_to_numeric(t.as_str()) {
+                    if let Ok(num) = checked_cast_text_to_numeric(s) {
                         *value = num;
                         return true;
                     } else {
                         return false;
                     }
                 }
+                return true;
             }
-        };
+        }
     }
-    return true;
+
+    true
 }
 
 fn exec_cast(value: &Value, datatype: &str) -> Value {
