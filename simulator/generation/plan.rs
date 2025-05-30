@@ -482,7 +482,6 @@ impl Interaction {
     pub(crate) fn execute_query(&self, conn: &mut Rc<Connection>, io: &SimulatorIO) -> ResultSet {
         if let Self::Query(query) = self {
             let query_str = query.to_string();
-            tracing::info!("executing: {}", query_str);
             let rows = conn.query(&query_str);
             if rows.is_err() {
                 let err = rows.err();

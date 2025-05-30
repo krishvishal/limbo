@@ -564,6 +564,7 @@ fn setup_simulation(
 ) -> (u64, SimulatorEnv, Vec<InteractionPlan>) {
     if let Some(seed) = &cli_opts.load {
         let seed = seed.parse::<u64>().expect("seed should be a number");
+        tracing::info!("seed={}", seed);
         let bug = bugbase
             .get_bug(seed)
             .unwrap_or_else(|| panic!("bug '{}' not found in bug base", seed));
@@ -660,7 +661,7 @@ fn init_logger() {
                 .without_time()
                 .with_thread_ids(false),
         )
-        .with(EnvFilter::from_default_env())
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .try_init();
 }
 
