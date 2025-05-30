@@ -90,7 +90,7 @@ impl SimulatorCLI {
         }
 
         if self.minimum_tests > self.maximum_tests {
-            log::warn!(
+            tracing::warn!(
                 "minimum size '{}' is greater than '{}' maximum size, setting both to '{}'",
                 self.minimum_tests,
                 self.maximum_tests,

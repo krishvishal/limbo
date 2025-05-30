@@ -6,6 +6,7 @@ pub(crate) use drop::Drop;
 pub(crate) use insert::Insert;
 pub(crate) use select::Select;
 use serde::{Deserialize, Serialize};
+use update::Update;
 
 use crate::{model::table::Value, runner::env::SimulatorEnv};
 
@@ -14,6 +15,7 @@ pub mod delete;
 pub mod drop;
 pub mod insert;
 pub mod select;
+pub mod update;
 
 // This type represents the potential queries on the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +24,7 @@ pub(crate) enum Query {
     Select(Select),
     Insert(Insert),
     Delete(Delete),
+    Update(Update),
     Drop(Drop),
 }
 
@@ -33,6 +36,7 @@ impl Query {
             | Query::Insert(Insert::Select { table, .. })
             | Query::Insert(Insert::Values { table, .. })
             | Query::Delete(Delete { table, .. })
+            | Query::Update(Update { table, .. })
             | Query::Drop(Drop { table, .. }) => vec![table.clone()],
         }
     }
@@ -43,6 +47,7 @@ impl Query {
             | Query::Insert(Insert::Select { table, .. })
             | Query::Insert(Insert::Values { table, .. })
             | Query::Delete(Delete { table, .. })
+            | Query::Update(Update { table, .. })
             | Query::Drop(Drop { table, .. }) => vec![table.clone()],
         }
     }
@@ -53,6 +58,7 @@ impl Query {
             Query::Insert(insert) => insert.shadow(env),
             Query::Delete(delete) => delete.shadow(env),
             Query::Select(select) => select.shadow(env),
+            Query::Update(update) => update.shadow(env),
             Query::Drop(drop) => drop.shadow(env),
         }
     }
@@ -65,6 +71,7 @@ impl Display for Query {
             Self::Select(select) => write!(f, "{}", select),
             Self::Insert(insert) => write!(f, "{}", insert),
             Self::Delete(delete) => write!(f, "{}", delete),
+            Self::Update(update) => write!(f, "{}", update),
             Self::Drop(drop) => write!(f, "{}", drop),
         }
     }

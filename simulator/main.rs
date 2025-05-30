@@ -15,6 +15,8 @@ use std::backtrace::Backtrace;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod generation;
 mod model;
@@ -192,7 +194,7 @@ fn watch_mode(
         match res {
             Ok(event) => {
                 if let EventKind::Modify(ModifyKind::Data(DataChange::Content)) = event.kind {
-                    log::info!("plan file modified, rerunning simulation");
+                    tracing::info!("plan file modified, rerunning simulation");
 
                     let result = SandboxedResult::from(
                         std::panic::catch_unwind(|| {
@@ -211,12 +213,12 @@ fn watch_mode(
                     );
                     match result {
                         SandboxedResult::Correct => {
-                            log::info!("simulation succeeded");
+                            tracing::info!("simulation succeeded");
                             println!("simulation succeeded");
                         }
                         SandboxedResult::Panicked { error, .. }
                         | SandboxedResult::FoundBug { error, .. } => {
-                            log::error!("simulation failed: '{}'", error);
+                            tracing::error!("simulation failed: '{}'", error);
                         }
                     }
                 }
@@ -238,19 +240,19 @@ fn run_simulator(
     last_execution: Arc<Mutex<Execution>>,
 ) -> Result<(), String> {
     std::panic::set_hook(Box::new(move |info| {
-        log::error!("panic occurred");
+        tracing::error!("panic occurred");
 
         let payload = info.payload();
         if let Some(s) = payload.downcast_ref::<&str>() {
-            log::error!("{}", s);
+            tracing::error!("{}", s);
         } else if let Some(s) = payload.downcast_ref::<String>() {
-            log::error!("{}", s);
+            tracing::error!("{}", s);
         } else {
-            log::error!("unknown panic payload");
+            tracing::error!("unknown panic payload");
         }
 
         let bt = Backtrace::force_capture();
-        log::error!("captured backtrace:\n{}", bt);
+        tracing::error!("captured backtrace:\n{}", bt);
     }));
 
     let env = Arc::new(Mutex::new(env));
@@ -275,7 +277,7 @@ fn run_simulator(
         // No doublecheck, run shrinking if panicking or found a bug.
         match &result {
             SandboxedResult::Correct => {
-                log::info!("simulation succeeded");
+                tracing::info!("simulation succeeded");
                 println!("simulation succeeded");
                 bugbase.mark_successful_run(seed, cli_opts).unwrap();
                 Ok(())
@@ -305,14 +307,14 @@ fn run_simulator(
                     }
                 }
 
-                log::error!("simulation failed: '{}'", error);
-                log::info!("Starting to shrink");
+                tracing::error!("simulation failed: '{}'", error);
+                tracing::info!("Starting to shrink");
 
                 let shrunk_plans = plans
                     .iter()
                     .map(|plan| {
                         let shrunk = plan.shrink_interaction_plan(last_execution);
-                        log::info!("{}", shrunk.stats());
+                        tracing::info!("{}", shrunk.stats());
                         shrunk
                     })
                     .collect::<Vec<_>>();
@@ -346,13 +348,15 @@ fn run_simulator(
                         SandboxedResult::FoundBug { error: e2, .. },
                     ) => {
                         if e1 != e2 {
-                            log::error!("shrinking failed, the error was not properly reproduced");
+                            tracing::error!(
+                                "shrinking failed, the error was not properly reproduced"
+                            );
                             bugbase
                                 .add_bug(seed, plans[0].clone(), Some(error.clone()), cli_opts)
                                 .unwrap();
                             Err(format!("failed with error: '{}'", error))
                         } else {
-                            log::info!(
+                            tracing::info!(
                                 "shrinking succeeded, reduced the plan from {} to {}",
                                 plans[0].plan.len(),
                                 shrunk_plans[0].plan.len()
@@ -368,7 +372,7 @@ fn run_simulator(
                         unreachable!("shrinking should never be called on a correct simulation")
                     }
                     _ => {
-                        log::error!("shrinking failed, the error was not properly reproduced");
+                        tracing::error!("shrinking failed, the error was not properly reproduced");
                         bugbase
                             .add_bug(seed, plans[0].clone(), Some(error.clone()), cli_opts)
                             .unwrap();
@@ -438,13 +442,13 @@ fn doublecheck(
 
     match doublecheck_result {
         Ok(_) => {
-            log::info!("doublecheck succeeded");
+            tracing::info!("doublecheck succeeded");
             println!("doublecheck succeeded");
             bugbase.mark_successful_run(seed, cli_opts)?;
             Ok(())
         }
         Err(e) => {
-            log::error!("doublecheck failed: '{}'", e);
+            tracing::error!("doublecheck failed: '{}'", e);
             bugbase
                 .add_bug(seed, plans[0].clone(), Some(e.clone()), cli_opts)
                 .unwrap();
@@ -484,13 +488,13 @@ fn differential_testing(
 
     match result {
         SandboxedResult::Correct => {
-            log::info!("simulation succeeded, output of Limbo conforms to SQLite");
+            tracing::info!("simulation succeeded, output of Limbo conforms to SQLite");
             println!("simulation succeeded, output of Limbo conforms to SQLite");
             bugbase.mark_successful_run(seed, cli_opts).unwrap();
             Ok(())
         }
         SandboxedResult::Panicked { error, .. } | SandboxedResult::FoundBug { error, .. } => {
-            log::error!("simulation failed: '{}'", error);
+            tracing::error!("simulation failed: '{}'", error);
             bugbase
                 .add_bug(seed, plans[0].clone(), Some(error.clone()), cli_opts)
                 .unwrap();
@@ -529,15 +533,15 @@ impl SandboxedResult {
                 }
             }
             Err(payload) => {
-                log::error!("panic occurred");
+                tracing::error!("panic occurred");
                 let err = if let Some(s) = payload.downcast_ref::<&str>() {
-                    log::error!("{}", s);
+                    tracing::error!("{}", s);
                     s.to_string()
                 } else if let Some(s) = payload.downcast_ref::<String>() {
-                    log::error!("{}", s);
+                    tracing::error!("{}", s);
                     s.to_string()
                 } else {
-                    log::error!("unknown panic payload");
+                    tracing::error!("unknown panic payload");
                     "unknown panic payload".to_string()
                 };
 
@@ -602,7 +606,7 @@ fn setup_simulation(
         }
         let mut env = SimulatorEnv::new(seed, cli_opts, &paths.db);
 
-        log::info!("Generating database interaction plan...");
+        tracing::info!("Generating database interaction plan...");
 
         let plans = (1..=env.opts.max_connections)
             .map(|_| InteractionPlan::arbitrary_from(&mut env.rng.clone(), &mut env))
@@ -610,7 +614,7 @@ fn setup_simulation(
 
         // todo: for now, we only use 1 connection, so it's safe to use the first plan.
         let plan = &plans[0];
-        log::info!("{}", plan.stats());
+        tracing::info!("{}", plan.stats());
         std::fs::write(plan_path(&paths), plan.to_string()).unwrap();
         std::fs::write(
             plan_path(&paths).with_extension("json"),
@@ -627,7 +631,7 @@ fn run_simulation(
     plans: &mut [InteractionPlan],
     last_execution: Arc<Mutex<Execution>>,
 ) -> ExecutionResult {
-    log::info!("Executing database interaction plan...");
+    tracing::info!("Executing database interaction plan...");
 
     let mut states = plans
         .iter()
@@ -642,17 +646,22 @@ fn run_simulation(
     let env = env.lock().unwrap();
     env.io.print_stats();
 
-    log::info!("Simulation completed");
+    tracing::info!("Simulation completed");
 
     result
 }
 
 fn init_logger() {
-    env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "info"))
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(true)
+                .with_line_number(true)
+                .without_time()
+                .with_thread_ids(false),
+        )
+        .with(EnvFilter::from_default_env())
+        .try_init();
 }
 
 fn banner() {

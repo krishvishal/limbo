@@ -444,6 +444,7 @@ pub(crate) struct Remaining {
     pub(crate) write: f64,
     pub(crate) create: f64,
     pub(crate) delete: f64,
+    pub(crate) update: f64,
     pub(crate) drop: f64,
 }
 
@@ -460,6 +461,9 @@ pub(crate) fn remaining(env: &SimulatorEnv, stats: &InteractionStats) -> Remaini
     let remaining_delete = ((env.opts.max_interactions as f64 * env.opts.delete_percent / 100.0)
         - (stats.delete_count as f64))
         .max(0.0);
+    let remaining_update = ((env.opts.max_interactions as f64 * env.opts.delete_percent / 100.0)
+        - (stats.update_count as f64))
+        .max(0.0);
     let remaining_drop = ((env.opts.max_interactions as f64 * env.opts.drop_percent / 100.0)
         - (stats.drop_count as f64))
         .max(0.0);
@@ -470,6 +474,7 @@ pub(crate) fn remaining(env: &SimulatorEnv, stats: &InteractionStats) -> Remaini
         create: remaining_create,
         delete: remaining_delete,
         drop: remaining_drop,
+        update: remaining_update,
     }
 }
 
