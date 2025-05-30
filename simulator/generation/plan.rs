@@ -515,7 +515,6 @@ impl Interaction {
                     }
                     StepResult::IO => {
                         io.run_once().unwrap();
-                        tracing::info!("io");
                     }
                     StepResult::Interrupt => {}
                     StepResult::Done => {
