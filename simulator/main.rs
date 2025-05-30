@@ -12,6 +12,7 @@ use runner::execution::{execute_plans, Execution, ExecutionHistory, ExecutionRes
 use runner::{differential, watch};
 use std::any::Any;
 use std::backtrace::Backtrace;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
@@ -654,6 +655,12 @@ fn run_simulation(
 }
 
 fn init_logger() {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("simulator.log")
+        .unwrap();
     let _ = tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -663,6 +670,14 @@ fn init_logger() {
                 .with_thread_ids(false),
         )
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file)
+                .with_ansi(false)
+                .with_line_number(true)
+                .without_time()
+                .with_thread_ids(false),
+        )
         .try_init();
 }
 
