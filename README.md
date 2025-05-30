@@ -187,6 +187,10 @@ We'd love to have you contribute to Limbo! Please check out the [contribution gu
 
 ## FAQ
 
+### Is Limbo ready for production use?
+
+Limbo is currently under heavy development and is **not** ready for production use.
+
 ### How is Limbo different from Turso's libSQL?
 
 Limbo is a project to build the modern evolution of SQLite in Rust, with a strong open contribution focus and features like native async support, vector search, and more. The libSQL project is also an attempt to evolve SQLite in a similar direction, but through a fork rather than a rewrite.
