@@ -600,6 +600,7 @@ fn setup_simulation(
             let mut rng = rand::thread_rng();
             rng.next_u64()
         });
+        tracing::info!("seed={}", seed);
 
         let paths = bugbase.paths(seed);
         if !paths.base.exists() {
