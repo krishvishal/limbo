@@ -2083,6 +2083,7 @@ pub fn op_seek(
     mv_store: Option<&Rc<MvStore>>,
 ) -> Result<InsnFunctionStepResult> {
     println!("we are in op_seek");
+    println!("we are in op_seek");
     let (Insn::SeekGE {
         cursor_id,
         start_reg,
@@ -2148,6 +2149,79 @@ pub fn op_seek(
         }
     } else {
         let pc = {
+            // let mut cursor = state.get_cursor(*cursor_id);
+            // let cursor = cursor.as_btree_mut();
+            let original_value = state.registers[*start_reg].get_owned_value().clone();
+            let mut temp_value = original_value.clone();
+
+            if matches!(temp_value, Value::Text(_)) {
+                let mut temp_reg = Register::Value(temp_value);
+                apply_affinity_char(&mut temp_reg, Affinity::Numeric);
+                temp_value = temp_reg.get_owned_value().clone();
+            }
+
+            let int_key = extract_int_value(&temp_value);
+            println!("int_key = {}", int_key);
+            let lost_precision = !matches!(temp_value, Value::Integer(_));
+            println!("lost_precision = {}", lost_precision);
+            println!("temp_value = {:?}", temp_value);
+            let actual_op = if lost_precision {
+                match (&temp_value, op) {
+                    (Value::Float(f), op) => {
+                        let int_key_as_float = int_key as f64;
+                        if int_key_as_float > *f {
+                            match op {
+                                SeekOp::GT => SeekOp::GE,
+                                SeekOp::LE => SeekOp::LE,
+                                other => other,
+                            }
+                        } else if int_key_as_float < *f {
+                            match op {
+                                SeekOp::GE => SeekOp::GT,
+                                SeekOp::LT => SeekOp::LE,
+                                other => other,
+                            }
+                        } else {
+                            op
+                        }
+                    }
+                    _ => op,
+                }
+            } else {
+                op
+            };
+
+            let rowid = if matches!(original_value, Value::Null) {
+                match actual_op {
+                    SeekOp::GE | SeekOp::GT => {
+                        // All integers are > NULL, so rewind cursor
+                        // let mut cursor = state.get_cursor(*cursor_id);
+                        // let cursor = cursor.as_btree_mut();
+                        // return_if_io!(cursor.rewind());
+                        state.pc = target_pc.to_offset_int();
+                        return Ok(InsnFunctionStepResult::Step);
+                    }
+                    SeekOp::LE | SeekOp::LT => {
+                        // No integers are < NULL, so jump to target
+                        state.pc = target_pc.to_offset_int();
+
+                        return Ok(InsnFunctionStepResult::Step);
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                int_key as u64
+            };
+            let mut cursor = state.get_cursor(*cursor_id);
+            let cursor = cursor.as_btree_mut();
+
+            let found = return_if_io!(cursor.seek(SeekKey::TableRowId(rowid), actual_op));
+
+            if !found {
+                target_pc.to_offset_int()
+            } else {
+                state.pc + 1
+            }
             // let mut cursor = state.get_cursor(*cursor_id);
             // let cursor = cursor.as_btree_mut();
             let original_value = state.registers[*start_reg].get_owned_value().clone();
@@ -5651,6 +5725,9 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                     // For floats, try to convert to integer if it's exact
                     // This is similar to sqlite3VdbeIntegerAffinity
                     return try_float_to_integer_affinity(value, fl);
+                    // For floats, try to convert to integer if it's exact
+                    // This is similar to sqlite3VdbeIntegerAffinity
+                    return try_float_to_integer_affinity(value, fl);
                 }
 
                 if let Value::Text(t) = value {
@@ -5661,11 +5738,10 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                         return false;
                     }
 
-                    let text = value.to_text().unwrap();
-                    let Ok(num) = checked_cast_text_to_numeric(&text) else {
+                    // Try to parse as number (similar to applyNumericAffinity)
+                    let Ok(num) = checked_cast_text_to_numeric(text) else {
                         return false;
                     };
-                    println!("casted int = {:?}", num.clone());
 
                     match num {
                         Value::Integer(i) => {
@@ -5714,6 +5790,25 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
     }
 
     true
+}
+
+/// Try to convert a float to integer if it represents an exact integer value
+/// This mimics sqlite3VdbeIntegerAffinity behavior
+fn try_float_to_integer_affinity(value: &mut Value, fl: f64) -> bool {
+    // Check if the float can be exactly represented as an integer
+    if let Ok(int_val) = cast_real_to_integer(fl) {
+        // Additional check: ensure round-trip conversion is exact
+        // and value is within safe bounds (similar to SQLite's checks)
+        if (int_val as f64) == fl && int_val > i64::MIN + 1 && int_val < i64::MAX - 1 {
+            *value = Value::Integer(int_val);
+            return true;
+        }
+    }
+
+    // If we can't convert to exact integer, keep as float for Numeric affinity
+    // but return false to indicate the conversion wasn't "complete"
+    *value = Value::Float(fl);
+    false
 }
 
 /// Try to convert a float to integer if it represents an exact integer value
@@ -6069,6 +6164,36 @@ pub fn exec_or(lhs: &Value, rhs: &Value) -> Value {
         (Some(true), _) | (_, Some(true)) => Value::Integer(1),
         (None, _) | (_, None) => Value::Null,
         _ => Value::Integer(0),
+    }
+}
+
+/// Mimics sqlite3VdbeIntValue - extract integer from any value type
+pub fn extract_int_value(value: &Value) -> i64 {
+    match value {
+        Value::Integer(i) => *i,
+        Value::Float(f) => {
+            // Use sqlite3RealToI64 equivalent
+            if *f < -9223372036854774784.0 {
+                i64::MIN
+            } else if *f > 9223372036854774784.0 {
+                i64::MAX
+            } else {
+                *f as i64
+            }
+        }
+        Value::Text(t) => {
+            // Try to parse as integer, return 0 if failed
+            t.as_str().parse::<i64>().unwrap_or(0)
+        }
+        Value::Blob(b) => {
+            // Try to parse blob as string then as integer
+            if let Ok(s) = std::str::from_utf8(b) {
+                s.parse::<i64>().unwrap_or(0)
+            } else {
+                0
+            }
+        }
+        Value::Null => 0,
     }
 }
 
