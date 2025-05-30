@@ -1189,7 +1189,7 @@ pub fn op_vupdate(
             if *conflict_action == 5 {
                 // ResolveType::Replace
                 if let Some(conn) = program.connection.upgrade() {
-                    conn.update_last_rowid(new_rowid as u64);
+                    conn.update_last_rowid(new_rowid);
                 }
             }
             state.pc += 1;
@@ -1934,7 +1934,7 @@ pub fn op_row_id(
                 let record = record.as_ref().unwrap();
                 let rowid = record.get_values().last().unwrap();
                 match rowid {
-                    RefValue::Integer(rowid) => *rowid as u64,
+                    RefValue::Integer(rowid) => *rowid,
                     _ => unreachable!(),
                 }
             };
@@ -2019,7 +2019,7 @@ pub fn op_seek_rowid(
         let mut cursor = state.get_cursor(*cursor_id);
         let cursor = cursor.as_btree_mut();
         let rowid = match state.registers[*src_reg].get_owned_value() {
-            Value::Integer(rowid) => Some(*rowid as u64),
+            Value::Integer(rowid) => Some(*rowid),
             Value::Null => None,
             // For non-integer values try to apply affinity and convert them to integer.
             other => {
@@ -3920,7 +3920,7 @@ pub fn op_insert(
         // NOTE(pere): Sending moved_before == true is okay because we moved before but
         // if we were to set to false after starting a balance procedure, it might
         // leave undefined state.
-        return_if_io!(cursor.insert(&BTreeKey::new_table_rowid(key as u64, Some(record)), true));
+        return_if_io!(cursor.insert(&BTreeKey::new_table_rowid(key, Some(record)), true));
         // Only update last_insert_rowid for regular table inserts, not schema modifications
         if cursor.root_page() != 1 {
             if let Some(rowid) = cursor.rowid()? {

@@ -642,7 +642,7 @@ impl PageContent {
 
     /// Read the rowid of a table interior cell.
     #[inline(always)]
-    pub fn cell_table_interior_read_rowid(&self, idx: usize) -> Result<u64> {
+    pub fn cell_table_interior_read_rowid(&self, idx: usize) -> Result<i64> {
         debug_assert!(self.page_type() == PageType::TableInterior);
         let buf = self.as_ptr();
         const INTERIOR_PAGE_HEADER_SIZE_BYTES: usize = 12;
@@ -651,7 +651,7 @@ impl PageContent {
         let cell_pointer = self.read_u16(cell_pointer) as usize;
         const LEFT_CHILD_PAGE_SIZE_BYTES: usize = 4;
         let (rowid, _) = read_varint(&buf[cell_pointer + LEFT_CHILD_PAGE_SIZE_BYTES..])?;
-        Ok(rowid)
+        Ok(rowid as i64)
     }
 
     /// Read the left child page of a table interior cell.
@@ -673,7 +673,7 @@ impl PageContent {
 
     /// Read the rowid of a table leaf cell.
     #[inline(always)]
-    pub fn cell_table_leaf_read_rowid(&self, idx: usize) -> Result<u64> {
+    pub fn cell_table_leaf_read_rowid(&self, idx: usize) -> Result<i64> {
         debug_assert!(self.page_type() == PageType::TableLeaf);
         let buf = self.as_ptr();
         const LEAF_PAGE_HEADER_SIZE_BYTES: usize = 8;
@@ -684,7 +684,7 @@ impl PageContent {
         let (_, nr) = read_varint(&buf[pos..])?;
         pos += nr;
         let (rowid, _) = read_varint(&buf[pos..])?;
-        Ok(rowid)
+        Ok(rowid as i64)
     }
 
     /// The cell pointer array of a b-tree page immediately follows the b-tree page header.
@@ -911,12 +911,12 @@ pub enum BTreeCell {
 #[derive(Debug, Clone)]
 pub struct TableInteriorCell {
     pub _left_child_page: u32,
-    pub _rowid: u64,
+    pub _rowid: i64,
 }
 
 #[derive(Debug, Clone)]
 pub struct TableLeafCell {
-    pub _rowid: u64,
+    pub _rowid: i64,
     /// Payload of cell, if it overflows it won't include overflowed payload.
     pub _payload: &'static [u8],
     /// This is the complete payload size including overflow pages.
@@ -981,7 +981,7 @@ pub fn read_btree_cell(
             let (rowid, _) = read_varint(&page[pos..])?;
             Ok(BTreeCell::TableInteriorCell(TableInteriorCell {
                 _left_child_page: left_child_page,
-                _rowid: rowid,
+                _rowid: rowid as i64,
             }))
         }
         PageType::IndexLeaf => {
@@ -1015,7 +1015,7 @@ pub fn read_btree_cell(
             let (payload, first_overflow_page) =
                 read_payload(&page[pos..pos + to_read], payload_size as usize);
             Ok(BTreeCell::TableLeafCell(TableLeafCell {
-                _rowid: rowid,
+                _rowid: rowid as i64,
                 _payload: payload,
                 first_overflow_page,
                 payload_size,

@@ -306,3 +306,11 @@ do_execsql_test_on_specific_db {:memory:} insert_from_select_union {
     SELECT * FROM t;
 } {1|100
 2|200}
+
+do_execsql_test_on_specific_db {:memory:} negative-primary-integer-key {
+    CREATE TABLE t(a INTEGER PRIMARY KEY);
+    insert into t values (-2),(13);
+    select * from t order by a asc;
+} {-2
+13}
+

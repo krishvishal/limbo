@@ -331,7 +331,7 @@ pub struct Connection {
     auto_commit: Cell<bool>,
     mv_transactions: RefCell<Vec<crate::mvcc::database::TxID>>,
     transaction_state: Cell<TransactionState>,
-    last_insert_rowid: Cell<u64>,
+    last_insert_rowid: Cell<i64>,
     last_change: Cell<i64>,
     total_changes: Cell<i64>,
     syms: RefCell<SymbolTable>,
@@ -550,11 +550,11 @@ impl Connection {
         }
     }
 
-    pub fn last_insert_rowid(&self) -> u64 {
+    pub fn last_insert_rowid(&self) -> i64 {
         self.last_insert_rowid.get()
     }
 
-    fn update_last_rowid(&self, rowid: u64) {
+    fn update_last_rowid(&self, rowid: i64) {
         self.last_insert_rowid.set(rowid);
     }
 
