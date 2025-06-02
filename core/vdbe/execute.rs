@@ -2029,9 +2029,8 @@ pub fn op_seek_rowid(
                 println!("type of reg: {:?}", temp_reg.get_owned_value());
                 if converted {
                     match temp_reg.get_owned_value() {
-                        Value::Integer(i) => Some(*i as u64),
-                        Value::Float(f) => {println!("float: {f}");
-                                                    Some(*f as u64)}
+                        Value::Integer(i) => Some(*i),
+                        Value::Float(f) => {Some(*f as i64)}
                         _ => unreachable!("apply_affinity_char with Numeric should produce an integer if it returns true"),
                     }
                 } else {
@@ -2210,7 +2209,7 @@ pub fn op_seek(
                     _ => unreachable!(),
                 }
             } else {
-                int_key as u64
+                int_key
             };
             let mut cursor = state.get_cursor(*cursor_id);
             let cursor = cursor.as_btree_mut();
@@ -2283,7 +2282,7 @@ pub fn op_seek(
                     _ => unreachable!(),
                 }
             } else {
-                int_key as u64
+                int_key
             };
             let mut cursor = state.get_cursor(*cursor_id);
             let cursor = cursor.as_btree_mut();
@@ -5811,25 +5810,6 @@ fn try_float_to_integer_affinity(value: &mut Value, fl: f64) -> bool {
     false
 }
 
-/// Try to convert a float to integer if it represents an exact integer value
-/// This mimics sqlite3VdbeIntegerAffinity behavior
-fn try_float_to_integer_affinity(value: &mut Value, fl: f64) -> bool {
-    // Check if the float can be exactly represented as an integer
-    if let Ok(int_val) = cast_real_to_integer(fl) {
-        // Additional check: ensure round-trip conversion is exact
-        // and value is within safe bounds (similar to SQLite's checks)
-        if (int_val as f64) == fl && int_val > i64::MIN + 1 && int_val < i64::MAX - 1 {
-            *value = Value::Integer(int_val);
-            return true;
-        }
-    }
-
-    // If we can't convert to exact integer, keep as float for Numeric affinity
-    // but return false to indicate the conversion wasn't "complete"
-    *value = Value::Float(fl);
-    false
-}
-
 fn exec_cast(value: &Value, datatype: &str) -> Value {
     if matches!(value, Value::Null) {
         return Value::Null;
@@ -6197,33 +6177,326 @@ pub fn extract_int_value(value: &Value) -> i64 {
     }
 }
 
-/// Mimics sqlite3VdbeIntValue - extract integer from any value type
-pub fn extract_int_value(value: &Value) -> i64 {
-    match value {
-        Value::Integer(i) => *i,
-        Value::Float(f) => {
-            // Use sqlite3RealToI64 equivalent
-            if *f < -9223372036854774784.0 {
-                i64::MIN
-            } else if *f > 9223372036854774784.0 {
-                i64::MAX
+#[derive(Debug, PartialEq)]
+enum NumericParseResult {
+    NotNumeric,      // not a valid number
+    PureInteger,     // pure integer (entire string)
+    HasDecimalOrExp, // has decimal point or exponent (entire string)
+    ValidPrefixOnly, // valid prefix but not entire string
+}
+
+#[derive(Debug)]
+enum ParsedNumber {
+    None,
+    Integer(i64),
+    Float(f64),
+}
+
+impl ParsedNumber {
+    fn as_integer(&self) -> Option<i64> {
+        match self {
+            ParsedNumber::Integer(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    fn as_float(&self) -> Option<f64> {
+        match self {
+            ParsedNumber::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+}
+
+fn try_for_float(text: &str) -> (NumericParseResult, ParsedNumber) {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return (NumericParseResult::NotNumeric, ParsedNumber::None);
+    }
+
+    let mut pos = 0;
+    let len = bytes.len();
+
+    while pos < len && is_space(bytes[pos]) {
+        pos += 1;
+    }
+
+    if pos >= len {
+        return (NumericParseResult::NotNumeric, ParsedNumber::None);
+    }
+
+    let start_pos = pos;
+
+    let mut sign = 1i64;
+
+    if bytes[pos] == b'-' {
+        sign = -1;
+        pos += 1;
+    } else if bytes[pos] == b'+' {
+        pos += 1;
+    }
+
+    if pos >= len {
+        return (NumericParseResult::NotNumeric, ParsedNumber::None);
+    }
+
+    let mut significand = 0u64;
+    let mut digit_count = 0;
+    let mut decimal_adjust = 0i32;
+    let mut has_digits = false;
+
+    // Parse digits before decimal point
+    while pos < len && bytes[pos].is_ascii_digit() {
+        has_digits = true;
+        let digit = (bytes[pos] - b'0') as u64;
+
+        if significand <= (u64::MAX - 9) / 10 {
+            significand = significand * 10 + digit;
+            digit_count += 1;
+        } else {
+            // Skip overflow digits but adjust exponent
+            decimal_adjust += 1;
+        }
+        pos += 1;
+    }
+
+    let mut has_decimal = false;
+    let mut has_exponent = false;
+
+    // Check for decimal point
+    if pos < len && bytes[pos] == b'.' {
+        has_decimal = true;
+        pos += 1;
+
+        // Parse fractional digits
+        while pos < len && bytes[pos].is_ascii_digit() {
+            has_digits = true;
+            let digit = (bytes[pos] - b'0') as u64;
+
+            if significand <= (u64::MAX - 9) / 10 {
+                significand = significand * 10 + digit;
+                digit_count += 1;
+                decimal_adjust -= 1;
+            }
+            pos += 1;
+        }
+    }
+
+    if !has_digits {
+        return (NumericParseResult::NotNumeric, ParsedNumber::None);
+    }
+
+    // Check for exponent
+    let mut exponent = 0i32;
+    if pos < len && (bytes[pos] == b'e' || bytes[pos] == b'E') {
+        has_exponent = true;
+        pos += 1;
+
+        if pos >= len {
+            // Incomplete exponent, but we have valid digits before
+            return create_result_from_significand(
+                significand,
+                sign,
+                decimal_adjust,
+                has_decimal,
+                has_exponent,
+                NumericParseResult::ValidPrefixOnly,
+            );
+        }
+
+        let mut exp_sign = 1i32;
+        if bytes[pos] == b'-' {
+            exp_sign = -1;
+            pos += 1;
+        } else if bytes[pos] == b'+' {
+            pos += 1;
+        }
+
+        if pos >= len || !bytes[pos].is_ascii_digit() {
+            // Incomplete exponent
+            return create_result_from_significand(
+                significand,
+                sign,
+                decimal_adjust,
+                has_decimal,
+                false,
+                NumericParseResult::ValidPrefixOnly,
+            );
+        }
+
+        // Parse exponent digits
+        while pos < len && bytes[pos].is_ascii_digit() {
+            let digit = (bytes[pos] - b'0') as i32;
+            if exponent < 10000 {
+                exponent = exponent * 10 + digit;
             } else {
-                *f as i64
+                exponent = 10000; // Cap at large value
+            }
+            pos += 1;
+        }
+        exponent *= exp_sign;
+    }
+
+    // Skip trailing whitespace
+    while pos < len && is_space(bytes[pos]) {
+        pos += 1;
+    }
+
+    // Determine if we consumed the entire string
+    let consumed_all = pos >= len;
+    let final_exponent = decimal_adjust + exponent;
+
+    let parse_result = if !consumed_all {
+        NumericParseResult::ValidPrefixOnly
+    } else if has_decimal || has_exponent {
+        NumericParseResult::HasDecimalOrExp
+    } else {
+        NumericParseResult::PureInteger
+    };
+
+    create_result_from_significand(
+        significand,
+        sign,
+        final_exponent,
+        has_decimal,
+        has_exponent,
+        parse_result,
+    )
+}
+
+fn create_result_from_significand(
+    significand: u64,
+    sign: i64,
+    exponent: i32,
+    has_decimal: bool,
+    has_exponent: bool,
+    parse_result: NumericParseResult,
+) -> (NumericParseResult, ParsedNumber) {
+    if significand == 0 {
+        match parse_result {
+            NumericParseResult::PureInteger => {
+                return (parse_result, ParsedNumber::Integer(0));
+            }
+            _ => {
+                return (parse_result, ParsedNumber::Float(0.0));
             }
         }
-        Value::Text(t) => {
-            // Try to parse as integer, return 0 if failed
-            t.as_str().parse::<i64>().unwrap_or(0)
+    }
+
+    // For pure integers without exponent, try to return as integer
+    if !has_decimal && !has_exponent && exponent == 0 {
+        let signed_val = (significand as i64).wrapping_mul(sign);
+        if (significand as i64) * sign == signed_val {
+            return (parse_result, ParsedNumber::Integer(signed_val));
         }
-        Value::Blob(b) => {
-            // Try to parse blob as string then as integer
-            if let Ok(s) = std::str::from_utf8(b) {
-                s.parse::<i64>().unwrap_or(0)
+    }
+
+    // Convert to float
+    let mut result = significand as f64;
+
+    let mut exp = exponent;
+    if exp > 0 {
+        while exp >= 100 {
+            result *= 1e100;
+            exp -= 100;
+        }
+        while exp >= 10 {
+            result *= 1e10;
+            exp -= 10;
+        }
+        while exp >= 1 {
+            result *= 10.0;
+            exp -= 1;
+        }
+    } else if exp < 0 {
+        while exp <= -100 {
+            result *= 1e-100;
+            exp += 100;
+        }
+        while exp <= -10 {
+            result *= 1e-10;
+            exp += 10;
+        }
+        while exp <= -1 {
+            result *= 0.1;
+            exp += 1;
+        }
+    }
+
+    if sign < 0 {
+        result = -result;
+    }
+
+    (parse_result, ParsedNumber::Float(result))
+}
+
+pub fn is_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+}
+
+fn real_to_i64(r: f64) -> i64 {
+    if r < -9223372036854774784.0 {
+        i64::MIN
+    } else if r > 9223372036854774784.0 {
+        i64::MAX
+    } else {
+        r as i64
+    }
+}
+
+fn apply_integer_affinity(register: &mut Register) -> bool {
+    let Register::Value(Value::Float(f)) = register else {
+        return false;
+    };
+
+    let ix = real_to_i64(*f);
+
+    // Only convert if round-trip is exact and not at extreme values
+    if *f == (ix as f64) && ix > i64::MIN && ix < i64::MAX {
+        *register = Register::Value(Value::Integer(ix));
+        true
+    } else {
+        false
+    }
+}
+
+/// Try to convert a value into a numeric representation if we can
+/// do so without loss of information. In other words, if the string
+/// looks like a number, convert it into a number. If it does not
+/// look like a number, leave it alone.
+pub fn apply_numeric_affinity(register: &mut Register, try_for_int: bool) -> bool {
+    let Register::Value(Value::Text(text)) = register else {
+        return false; // Only apply to text values
+    };
+
+    let text_str = text.as_str();
+    let (parse_result, parsed_value) = try_for_float(text_str);
+
+    // Only convert if we have a complete valid number (not just a prefix)
+    match parse_result {
+        NumericParseResult::NotNumeric | NumericParseResult::ValidPrefixOnly => {
+            false // Leave as text
+        }
+        NumericParseResult::PureInteger => {
+            if let Some(int_val) = parsed_value.as_integer() {
+                *register = Register::Value(Value::Integer(int_val));
+                true
             } else {
-                0
+                false
             }
         }
-        Value::Null => 0,
+        NumericParseResult::HasDecimalOrExp => {
+            if let Some(float_val) = parsed_value.as_float() {
+                *register = Register::Value(Value::Float(float_val));
+                // If try_for_int is true, try to convert float to int if exact
+                if try_for_int {
+                    apply_integer_affinity(register);
+                }
+                true
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -6232,6 +6505,40 @@ mod tests {
     use crate::types::{Text, Value};
 
     use super::{exec_add, exec_or};
+
+    #[test]
+    fn test_apply_numeric_affinity_partial_numbers() {
+        let mut reg = Register::Value(Value::Text(Text::from_str("123abc")));
+        assert!(!apply_numeric_affinity(&mut reg, false));
+        assert!(matches!(reg, Register::Value(Value::Text(_))));
+
+        let mut reg = Register::Value(Value::Text(Text::from_str("-53093015420544-15062897")));
+        assert!(!apply_numeric_affinity(&mut reg, false));
+        assert!(matches!(reg, Register::Value(Value::Text(_))));
+
+        let mut reg = Register::Value(Value::Text(Text::from_str("123.45xyz")));
+        assert!(!apply_numeric_affinity(&mut reg, false));
+        assert!(matches!(reg, Register::Value(Value::Text(_))));
+    }
+
+    #[test]
+    fn test_apply_numeric_affinity_complete_numbers() {
+        let mut reg = Register::Value(Value::Text(Text::from_str("123")));
+        assert!(apply_numeric_affinity(&mut reg, false));
+        assert_eq!(*reg.get_owned_value(), Value::Integer(123));
+
+        let mut reg = Register::Value(Value::Text(Text::from_str("123.45")));
+        assert!(apply_numeric_affinity(&mut reg, false));
+        assert_eq!(*reg.get_owned_value(), Value::Float(123.45));
+
+        let mut reg = Register::Value(Value::Text(Text::from_str("  -456  ")));
+        assert!(apply_numeric_affinity(&mut reg, false));
+        assert_eq!(*reg.get_owned_value(), Value::Integer(-456));
+
+        let mut reg = Register::Value(Value::Text(Text::from_str("0")));
+        assert!(apply_numeric_affinity(&mut reg, false));
+        assert_eq!(*reg.get_owned_value(), Value::Integer(0));
+    }
 
     #[test]
     fn test_exec_add() {
