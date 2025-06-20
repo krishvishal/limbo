@@ -11,7 +11,7 @@ use crate::{
         },
     },
     translate::{collate::CollationSeq, plan::IterationDirection},
-    types::{IndexKeyInfo, IndexKeySortOrder, ParseRecordState},
+    types::{IndexKeyInfo, IndexKeySortOrder, ParseRecordState, RecordCursor},
     MvCursor,
 };
 
@@ -28,6 +28,7 @@ use std::{
     cmp::{Ordering, Reverse},
     collections::BinaryHeap,
     fmt::Debug,
+    ops::DerefMut,
     pin::Pin,
     rc::Rc,
     sync::Arc,
@@ -283,7 +284,7 @@ impl BTreeKey<'_> {
     }
 
     /// Assert that the key is an index key and return it.
-    fn to_index_key_values(&self) -> &'_ Vec<RefValue> {
+    fn to_index_key_values(&self) -> Vec<RefValue> {
         match self {
             BTreeKey::TableRowId(_) => panic!("BTreeKey::to_index_key called on TableRowId"),
             BTreeKey::IndexKey(key) => key.get_values(),
@@ -506,6 +507,7 @@ pub struct BTreeCursor {
     read_overflow_state: RefCell<Option<ReadPayloadOverflow>>,
     /// Contains the current cell_idx for `find_cell`
     find_cell_state: FindCellState,
+    pub record_cursor: RefCell<RecordCursor>,
 }
 
 impl BTreeCursor {
@@ -539,6 +541,7 @@ impl BTreeCursor {
             read_overflow_state: RefCell::new(None),
             find_cell_state: FindCellState(None),
             parse_record_state: RefCell::new(ParseRecordState::Init),
+            record_cursor: RefCell::new(RecordCursor::new()),
         }
     }
 
@@ -580,8 +583,15 @@ impl BTreeCursor {
         if !self.has_rowid() {
             return None;
         }
-        let rowid = match self.get_immutable_record().as_ref().unwrap().last_value() {
-            Some(RefValue::Integer(rowid)) => *rowid,
+        let mut record_cursor_ref = self.record_cursor.borrow_mut();
+        let record_cursor = record_cursor_ref.deref_mut();
+        let rowid = match self
+            .get_immutable_record()
+            .as_ref()
+            .unwrap()
+            .last_value(record_cursor)
+        {
+            Some(Ok(RefValue::Integer(rowid))) => rowid as i64,
             _ => unreachable!(
                 "index where has_rowid() is true should have an integer rowid as the last value"
             ),
@@ -1572,11 +1582,12 @@ impl BTreeCursor {
                 let (target_leaf_page_is_in_left_subtree, is_eq) = {
                     let record = self.get_immutable_record();
                     let record = record.as_ref().unwrap();
+                    let record_values = record.get_values();
                     let record_slice_equal_number_of_cols =
-                        &record.get_values().as_slice()[..index_key.get_values().len()];
+                        &record_values[..index_key.get_values().len()];
                     let interior_cell_vs_index_key = compare_immutable(
                         record_slice_equal_number_of_cols,
-                        index_key.get_values(),
+                        index_key.get_values().as_slice(),
                         self.key_sort_order(),
                         &self.collations,
                     );
@@ -1988,11 +1999,12 @@ impl BTreeCursor {
             let record = self.get_immutable_record();
             let record = record.as_ref().unwrap();
             tracing::debug!(?record);
-            let record_slice_equal_number_of_cols =
-                &record.get_values().as_slice()[..key.get_values().len()];
+            let record_values = record.get_values();
+            let key_values = key.get_values();
+            let record_slice_equal_number_of_cols = &record_values[..key_values.len()];
             compare_immutable(
                 record_slice_equal_number_of_cols,
-                key.get_values(),
+                key_values.as_slice(),
                 self.key_sort_order(),
                 &self.collations,
             )
@@ -2080,7 +2092,7 @@ impl BTreeCursor {
         let record = bkey
             .get_record()
             .expect("expected record present on insert");
-
+        let record_values = record.get_values();
         if let CursorState::None = &self.state {
             self.state = CursorState::Write(WriteInfo::new());
         }
@@ -2150,11 +2162,11 @@ impl BTreeCursor {
                             BTreeCell::IndexLeafCell(..) => {
                                 // Not necessary to read record again here, as find_cell already does that for us
                                 let cmp = compare_immutable(
-                                    record.get_values(),
+                                    record_values.as_slice(),
                                     self.get_immutable_record()
                                         .as_ref()
                                         .unwrap()
-                                        .get_values(),
+                                        .get_values().as_slice(),
                                         self.key_sort_order(),
                                         &self.collations,
                                 );
@@ -2182,7 +2194,8 @@ impl BTreeCursor {
                         }
                     }
                     // insert cell
-                    let mut cell_payload: Vec<u8> = Vec::with_capacity(record.len() + 4);
+
+                    let mut cell_payload: Vec<u8> = Vec::with_capacity(record_values.len() + 4);
                     fill_cell_payload(
                         page_type,
                         bkey.maybe_rowid(),
@@ -3895,7 +3908,7 @@ impl BTreeCursor {
                     let record = record.as_ref().unwrap();
                     let record_same_number_cols = &record.get_values()[..key_values.len()];
                     let order = compare_immutable(
-                        key_values,
+                        key_values.as_slice(),
                         record_same_number_cols,
                         self.key_sort_order(),
                         &self.collations,
@@ -4599,7 +4612,9 @@ impl BTreeCursor {
         match record_opt.as_ref() {
             Some(record) => {
                 // Existing record found — compare prefix
-                let existing_key = &record.get_values()[..record.count().saturating_sub(1)];
+                let mut record_cursor = self.record_cursor.borrow_mut();
+                let count = record_cursor.count(key);
+                let existing_key = &record.get_values()[..count.saturating_sub(1)];
                 let inserted_key_vals = &key.get_values();
                 // Need this check because .all returns True on an empty iterator,
                 // So when record_opt is invalidated, it would always indicate show up as a duplicate key
@@ -4904,7 +4919,8 @@ impl BTreeCursor {
     ) -> Result<CursorResult<()>> {
         // build the new payload
         let page_type = page_ref.get().get().contents.as_ref().unwrap().page_type();
-        let mut new_payload = Vec::with_capacity(record.len());
+        let serial_types_len = self.record_cursor.borrow_mut().len(record);
+        let mut new_payload = Vec::with_capacity(serial_types_len);
         let rowid = return_if_io!(self.rowid());
         fill_cell_payload(
             page_type,
@@ -4964,7 +4980,7 @@ impl BTreeCursor {
 
     fn get_immutable_record_or_create(&self) -> std::cell::RefMut<'_, Option<ImmutableRecord>> {
         if self.reusable_immutable_record.borrow().is_none() {
-            let record = ImmutableRecord::new(4096, 10);
+            let record = ImmutableRecord::new(4096);
             self.reusable_immutable_record.replace(Some(record));
         }
         self.reusable_immutable_record.borrow_mut()
@@ -5123,6 +5139,15 @@ impl BTreeCursor {
     pub fn allocate_page(&self, page_type: PageType, offset: usize) -> BTreePage {
         self.pager
             .do_allocate_page(page_type, offset, BtreePageAllocMode::Any)
+    }
+
+    pub fn get_column(&self, idx: usize) -> Result<RefValue> {
+        let record_ref = self.reusable_immutable_record.borrow();
+        let record = record_ref
+            .as_ref()
+            .ok_or_else(|| LimboError::InternalError("No record available".into()))?;
+
+        self.record_cursor.borrow_mut().get_value(record, idx)
     }
 }
 
