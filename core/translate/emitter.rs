@@ -478,11 +478,15 @@ fn emit_delete_insns(
     table_references: &TableReferences,
 ) -> Result<()> {
     let table_reference = table_references.joined_tables().first().unwrap();
+
+    // Determine which cursor to use based on the access method
     let cursor_id = match &table_reference.op {
+        // Table scan: use main table cursor
         Operation::Scan { .. } => {
             program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id))
         }
         Operation::Search(search) => match search {
+            // Rowid search or table seek: use main table cursor
             Search::RowidEq { .. } | Search::Seek { index: None, .. } => {
                 program.resolve_cursor_id(&CursorKey::table(table_reference.internal_id))
             }
@@ -543,30 +547,47 @@ fn emit_delete_insns(
 
         if let Some(index_refs) = index_refs_opt {
             for (index, index_cursor_id) in index_refs {
-                let num_regs = index.columns.len() + 1;
-                let start_reg = program.alloc_registers(num_regs);
-                // Emit columns that are part of the index
-                index
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .for_each(|(reg_offset, column_index)| {
-                        program.emit_column(
-                            main_table_cursor_id,
-                            column_index.pos_in_table,
-                            start_reg + reg_offset,
-                        );
+                // Check if cursors are positioned from index seek operations
+                // This determines whether to use Delete (positioned) vs IdxDelete (key-based)
+                let is_cursor_positioned = matches!(
+                    &table_reference.op,
+                    Operation::Search(Search::Seek { index: Some(_), .. })
+                );
+
+                if is_cursor_positioned {
+                    // Cursors are positioned (after SeekGT and DeferredSeek)
+                    // Use Delete instruction to remove entry at current cursor position
+                    program.emit_insn(Insn::Delete {
+                        cursor_id: index_cursor_id,
                     });
-                program.emit_insn(Insn::RowId {
-                    cursor_id: main_table_cursor_id,
-                    dest: start_reg + num_regs - 1,
-                });
-                program.emit_insn(Insn::IdxDelete {
-                    start_reg,
-                    num_regs,
-                    cursor_id: index_cursor_id,
-                    raise_error_if_no_matching_entry: true,
-                });
+                } else {
+                    // Cursors are not positioned (table scan)
+                    // Use IdxDelete with key based lookup to find and remove index entries
+                    let num_regs = index.columns.len() + 1;
+                    let start_reg = program.alloc_registers(num_regs);
+
+                    index
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .for_each(|(reg_offset, column_index)| {
+                            program.emit_column(
+                                main_table_cursor_id,
+                                column_index.pos_in_table,
+                                start_reg + reg_offset,
+                            );
+                        });
+                    program.emit_insn(Insn::RowId {
+                        cursor_id: main_table_cursor_id,
+                        dest: start_reg + num_regs - 1,
+                    });
+                    program.emit_insn(Insn::IdxDelete {
+                        start_reg,
+                        num_regs,
+                        cursor_id: index_cursor_id,
+                        raise_error_if_no_matching_entry: true,
+                    });
+                }
             }
         }
 
@@ -586,6 +607,7 @@ fn emit_delete_insns(
             )?;
         }
 
+        // Delete from the main table (always uses Delete since table cursor is positioned)
         program.emit_insn(Insn::Delete {
             cursor_id: main_table_cursor_id,
         });
