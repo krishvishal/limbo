@@ -4484,15 +4484,6 @@ impl BTreeCursor {
                     let needs_balancing = self.stack.has_parent()
                         && free_space as usize * 3 > self.usable_space() * 2;
 
-                    if rightmost_cell_was_dropped {
-                        // If we drop a cell in the middle, e.g. our current index is 2 and we drop 'c' from [a,b,c,d,e], then we don't need to retreat index,
-                        // because index 2 is still going to be the right place [a,b,D,e]
-                        // but:
-                        // If we drop the rightmost cell, e.g. our current index is 4 and we drop 'e' from [a,b,c,d,e], then we need to retreat index,
-                        // because index 4 is now pointing beyond the last cell [a,b,c,d] _ <-- index 4
-                        self.stack.retreat();
-                    }
-
                     if needs_balancing {
                         let delete_info = self.state.mut_delete_info().unwrap();
                         if delete_info.balance_write_info.is_none() {
@@ -4506,8 +4497,6 @@ impl BTreeCursor {
                     } else {
                         // FIXME: if we deleted something from an interior page, this is now the leaf page from where a replacement cell
                         // was taken in InteriorNodeReplacement. We must also check if the parent needs balancing!!!
-                        self.stack.retreat();
-
                         if rightmost_cell_was_dropped {
                             // If we drop a cell in the middle, e.g. our current index is 2 and we drop 'c' from [a,b,c,d,e], then we don't need to retreat index,
                             // because index 2 is still going to be the right place [a,b,D,e]
