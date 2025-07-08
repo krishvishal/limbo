@@ -430,6 +430,8 @@ pub enum CursorValidState {
     Valid,
     /// Cursor may be pointing to a non-existent location/cell. This can happen after balancing operations
     RequireSeek,
+    /// Cursor should skip the next movement operation. +1 = skip forward on next(), -1 = skip backward on prev()
+    SkipNext(i8),
 }
 
 #[derive(Debug)]
@@ -630,6 +632,27 @@ impl BTreeCursor {
     /// Used in backwards iteration.
     #[instrument(skip(self), level = Level::INFO, name = "prev")]
     fn get_prev_record(&mut self) -> Result<CursorResult<bool>> {
+        if let CursorValidState::SkipNext(direction) = &self.valid_state {
+            match *direction {
+                -1 => {
+                    // skipNext < 0: Previous() is no-op - just return success
+                    self.valid_state = CursorValidState::Valid;
+                    return Ok(CursorResult::Ok(true));
+                }
+                0 => {
+                    // Stay in place - cursor is already positioned correctly
+                    self.valid_state = CursorValidState::Valid;
+                    return Ok(CursorResult::Ok(true));
+                }
+                1 => {
+                    self.valid_state = CursorValidState::Valid;
+                    // skipNext > 0: Continue with normal Previous() logic
+                    // (this is for Next() no-op, so Previous() should work normally)
+                }
+                _ => unreachable!("Invalid skip direction"),
+            }
+        }
+
         loop {
             let page = self.stack.top();
 
@@ -1134,6 +1157,26 @@ impl BTreeCursor {
     /// Used in forwards iteration, which is the default.
     #[instrument(skip(self), level = Level::INFO, name = "next")]
     fn get_next_record(&mut self) -> Result<CursorResult<bool>> {
+        if let CursorValidState::SkipNext(direction) = &self.valid_state {
+            match *direction {
+                1 => {
+                    // skipNext > 0: Next() is no-op - just return success
+                    self.valid_state = CursorValidState::Valid;
+                    return Ok(CursorResult::Ok(true));
+                }
+                0 => {
+                    // Stay in place - cursor is already positioned correctly
+                    self.valid_state = CursorValidState::Valid;
+                    return Ok(CursorResult::Ok(true));
+                }
+                -1 => {
+                    self.valid_state = CursorValidState::Valid;
+                    // skipNext < 0: Continue with normal Next() logic
+                    // (this is for Previous() no-op, so Next() should work normally)
+                }
+                _ => unreachable!("Invalid skip direction"),
+            }
+        }
         if let Some(mv_cursor) = &self.mv_cursor {
             let mut mv_cursor = mv_cursor.borrow_mut();
             let rowid = mv_cursor.current_row_id();
@@ -4464,6 +4507,19 @@ impl BTreeCursor {
                         // FIXME: if we deleted something from an interior page, this is now the leaf page from where a replacement cell
                         // was taken in InteriorNodeReplacement. We must also check if the parent needs balancing!!!
                         self.stack.retreat();
+
+                        if rightmost_cell_was_dropped {
+                            // If we drop a cell in the middle, e.g. our current index is 2 and we drop 'c' from [a,b,c,d,e], then we don't need to retreat index,
+                            // because index 2 is still going to be the right place [a,b,D,e]
+                            // but:
+                            // If we drop the rightmost cell, e.g. our current index is 4 and we drop 'e' from [a,b,c,d,e], then we need to retreat index,
+                            // because index 4 is now pointing beyond the last cell [a,b,c,d] _ <-- index 4
+                            self.stack.retreat();
+                            self.valid_state = CursorValidState::SkipNext(-1);
+                        } else {
+                            self.valid_state = CursorValidState::SkipNext(1);
+                            // Don't change cursor position - it's already correct
+                        }
                         self.state = CursorState::None;
                         return Ok(CursorResult::Ok(()));
                     }
