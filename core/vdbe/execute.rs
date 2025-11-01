@@ -19,6 +19,7 @@ use crate::types::{
 };
 use crate::util::{
     normalize_ident, rewrite_column_references_if_needed, rewrite_fk_parent_cols_if_self_ref,
+    trim_ascii_whitespace,
 };
 use crate::vdbe::insn::InsertFlags;
 use crate::vdbe::{registers_to_ref_values, EndStatement, TxnCleanup};
@@ -9882,7 +9883,7 @@ fn apply_affinity_char(target: &mut Register, affinity: Affinity) -> bool {
                 }
 
                 if let Value::Text(t) = value {
-                    let text = t.as_str().trim();
+                    let text = trim_ascii_whitespace(t.as_str());
 
                     // Handle hex numbers - they shouldn't be converted
                     if text.starts_with("0x") {
